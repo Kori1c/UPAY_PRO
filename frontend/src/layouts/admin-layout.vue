@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { IconPoweroff } from '@arco-design/web-vue/es/icon'
 
 import AppThemeToggle from '../components/app-theme-toggle.vue'
+import AppIcon from '../components/icons/app-icon.vue'
 import { adminNavigationItems } from '../router/navigation'
 import { useAppStore } from '../stores/app'
 
@@ -147,7 +147,7 @@ async function handleLogout() {
                 @click="handleMenuClick(item.path)"
               >
                 <template #icon>
-                  <component :is="item.icon" />
+                  <app-icon :name="item.icon" />
                 </template>
                 {{ item.label }}
               </a-menu-item>
@@ -158,7 +158,7 @@ async function handleLogout() {
         <div class="admin-sider-footer">
           <a-button long type="outline" status="danger" @click="handleLogout">
             <template #icon>
-              <icon-poweroff />
+              <app-icon name="poweroff" />
             </template>
             退出登录
           </a-button>
@@ -199,7 +199,7 @@ async function handleLogout() {
           class="admin-mobile-bottom-nav__item"
           :class="{ 'admin-mobile-bottom-nav__item--active': selectedKeys[0] === item.key }"
         >
-          <component :is="item.icon" />
+          <app-icon :name="item.icon" />
           <span>{{ item.label }}</span>
         </RouterLink>
       </div>

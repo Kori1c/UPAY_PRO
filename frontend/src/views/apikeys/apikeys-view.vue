@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconLaunch } from '@arco-design/web-vue/es/icon'
 import { adminApi, type ApiKey } from '../../api'
+import AppIcon from '../../components/icons/app-icon.vue'
 import FloatingSaveBar from '../../components/floating-save-bar.vue'
 
 const loading = ref(false)
@@ -140,7 +140,7 @@ onMounted(() => {
             />
           </div>
           <a :href="item.url" target="_blank" class="service-link">
-            前往申请 <icon-launch />
+            前往申请 <app-icon name="launch" />
           </a>
         </article>
       </article>

@@ -2,9 +2,9 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { adminApi, type Stats, type Order } from '../../api'
+import AppIcon from '../../components/icons/app-icon.vue'
 import MetricStatCard from '../../components/metric-stat-card.vue'
 import PageSectionCard from '../../components/page-section-card.vue'
-import { IconRight } from '@arco-design/web-vue/es/icon'
 
 const router = useRouter()
 let pollTimer: number | null = null
@@ -29,6 +29,11 @@ const metrics = ref([
 ])
 
 const recentOrders = ref<Order[]>([])
+
+function formatDateTime(value?: string | null) {
+  if (!value) return '-'
+  return new Date(value).toLocaleString()
+}
 
 async function fetchStats() {
   try {
@@ -125,9 +130,36 @@ onUnmounted(() => {
           <a-empty description="暂无近期订单" />
         </template>
       </a-table>
+
+      <div class="dashboard-orders-mobile">
+        <article
+          v-for="order in recentOrders"
+          :key="order.id"
+          class="dashboard-order-card"
+        >
+          <div class="dashboard-order-card__top">
+            <strong>{{ order.trade_id }}</strong>
+            <a-tag
+              class="order-status-tag"
+              :color="order.status === 2 ? 'green' : order.status === 3 ? 'red' : 'blue'"
+              bordered
+            >
+              {{ order.status === 2 ? '已支付' : order.status === 3 ? '已过期' : '待支付' }}
+            </a-tag>
+          </div>
+          <div class="dashboard-order-card__name">{{ order.order_id || '-' }}</div>
+          <div class="dashboard-order-card__meta">
+            <span>{{ order.type }}</span>
+            <strong>{{ order.amount.toFixed(2) }} USD</strong>
+          </div>
+          <time>{{ formatDateTime(order.CreatedAt) }}</time>
+        </article>
+        <a-empty v-if="recentOrders.length === 0" description="暂无近期订单" />
+      </div>
+
       <div class="dashboard-footer">
         <a-button type="text" size="small" @click="router.push('/orders')">
-          全部订单 <icon-right />
+          全部订单 <app-icon name="right" />
         </a-button>
       </div>
     </page-section-card>
@@ -214,6 +246,78 @@ onUnmounted(() => {
 
 .dashboard-footer :deep(.arco-btn):hover {
   color: var(--accent);
+}
+
+.dashboard-orders-mobile {
+  display: none;
+}
+
+.dashboard-order-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.dashboard-order-card:first-child {
+  padding-top: 0;
+}
+
+.dashboard-order-card:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.dashboard-order-card__top,
+.dashboard-order-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-order-card__top strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-order-card__name {
+  color: var(--text-primary);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-order-card__meta {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.dashboard-order-card__meta strong {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dashboard-order-card time {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .dashboard-orders-table {
+    display: none;
+  }
+
+  .dashboard-orders-mobile {
+    display: grid;
+  }
 }
 
 </style>

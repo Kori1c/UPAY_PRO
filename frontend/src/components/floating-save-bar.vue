@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { IconSave, IconInfoCircle } from '@arco-design/web-vue/es/icon'
+import AppIcon from './icons/app-icon.vue'
 
 defineProps<{
   show: boolean
@@ -14,7 +14,7 @@ defineEmits(['save'])
     <div v-if="show" class="save-capsule">
       <div class="save-capsule__inner">
         <div class="save-capsule__hint">
-          <icon-info-circle class="hint-icon" />
+          <app-icon name="info-circle" class="hint-icon" />
           <span>配置有改动，请及时保存</span>
         </div>
         <a-button 
@@ -24,7 +24,7 @@ defineEmits(['save'])
           class="save-btn"
           @click="$emit('save')"
         >
-          <template #icon><icon-save /></template>
+          <template #icon><app-icon name="save" /></template>
           立即保存
         </a-button>
       </div>
@@ -99,5 +99,42 @@ defineEmits(['save'])
 .capsule-fade-leave-to {
   opacity: 0;
   transform: translate(-50%, 30px) scale(0.95);
+}
+
+@media (max-width: 768px) {
+  .save-capsule {
+    right: 16px;
+    bottom: calc(96px + env(safe-area-inset-bottom));
+    left: 16px;
+    width: auto;
+    transform: none;
+  }
+
+  .save-capsule__inner {
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 8px 8px 14px;
+  }
+
+  .save-capsule__hint {
+    min-width: 0;
+    font-size: 13px;
+  }
+
+  .save-capsule__hint span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .save-btn {
+    flex: 0 0 auto;
+    height: 36px !important;
+    padding: 0 16px !important;
+  }
+
+  .capsule-fade-enter-from,
+  .capsule-fade-leave-to {
+    transform: translateY(20px) scale(0.98);
+  }
 }
 </style>

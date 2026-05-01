@@ -2,10 +2,10 @@
 import { onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
-import { IconCopy, IconQuestionCircle, IconSafe } from '@arco-design/web-vue/es/icon'
 import { adminApi, type PasskeyItem, type Setting } from '../../api'
 import FormSectionCard from '../../components/form-section-card.vue'
 import FloatingSaveBar from '../../components/floating-save-bar.vue'
+import AppIcon from '../../components/icons/app-icon.vue'
 import {
   createRegistrationCredential,
   getPasskeyUnavailableReason,
@@ -385,7 +385,7 @@ onMounted(() => {
               <span class="settings-label-with-tip">
                 页面地址
                 <a-tooltip content="用于拼接支付页地址与后台跳转链接，正式环境建议填写完整域名。">
-                  <icon-question-circle />
+                  <app-icon name="question-circle" />
                 </a-tooltip>
               </span>
             </template>
@@ -405,7 +405,7 @@ onMounted(() => {
               <span class="settings-label-with-tip">
                 通信密钥 (MD5 Key)
                 <a-tooltip content="修改后请同步更新商户端签名配置，否则新订单请求会验签失败。">
-                  <icon-question-circle />
+                  <app-icon name="question-circle" />
                 </a-tooltip>
               </span>
             </template>
@@ -413,7 +413,7 @@ onMounted(() => {
               <a-input-password v-model="settingForm.SecretKey" placeholder="用于商户侧签名通信" />
               <div class="settings-secret-actions">
                 <a-button type="outline" @click="handleCopySecretKey">
-                  <template #icon><icon-copy /></template>
+                  <template #icon><app-icon name="copy" /></template>
                   复制
                 </a-button>
                 <a-button type="outline" @click="handleGenerateSecretKey">重新生成</a-button>
@@ -454,7 +454,7 @@ onMounted(() => {
         <div class="passkey-policy">
           <div class="passkey-policy__copy">
             <div class="passkey-policy__title">
-              <icon-safe />
+              <app-icon name="safe" />
               密码登录
             </div>
             <p>
@@ -572,6 +572,12 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.settings-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
 .settings-grid--base {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -599,9 +605,10 @@ onMounted(() => {
   gap: 6px;
 }
 
-.settings-label-with-tip :deep(.arco-icon) {
+.settings-label-with-tip svg {
   color: var(--text-tertiary);
-  font-size: 14px;
+  width: 14px;
+  height: 14px;
   cursor: help;
 }
 
@@ -624,6 +631,17 @@ onMounted(() => {
 .settings-secret-actions :deep(.arco-btn) {
   flex: 0 0 auto;
   border-radius: 12px;
+}
+
+.settings-warning-card {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--warning) 24%, var(--border-soft));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--warning) 10%, var(--surface-primary));
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .passkey-panel {
@@ -655,9 +673,10 @@ onMounted(() => {
   font-weight: 800;
 }
 
-.passkey-policy__title :deep(.arco-icon) {
+.passkey-policy__title svg {
   color: var(--accent);
-  font-size: 18px;
+  width: 18px;
+  height: 18px;
 }
 
 .passkey-policy p {
@@ -757,6 +776,17 @@ onMounted(() => {
   .passkey-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .passkey-policy {
+    align-items: center;
+    flex-direction: row;
+  }
+
+  .passkey-policy :deep(.arco-switch) {
+    flex: 0 0 auto;
+    width: 44px;
+    min-width: 44px;
   }
 
   .passkey-item__meta {

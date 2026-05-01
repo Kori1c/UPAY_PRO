@@ -1,9 +1,21 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import Components from 'unplugin-vue-components/vite'
+import { ArcoResolver } from 'unplugin-vue-components/resolvers'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    Components({
+      dts: false,
+      resolvers: [
+        ArcoResolver({
+          importStyle: 'css',
+        }),
+      ],
+    }),
+  ],
   server: {
     host: '127.0.0.1',
     port: 4173,
@@ -23,14 +35,6 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes('node_modules')) {
             return undefined
-          }
-
-          if (id.includes('@arco-design/web-vue/es/icon')) {
-            return 'arco-icons'
-          }
-
-          if (id.includes('@arco-design/web-vue')) {
-            return 'arco-core'
           }
 
           if (id.includes('vue-router')) {

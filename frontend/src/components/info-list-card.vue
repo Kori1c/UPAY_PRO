@@ -29,3 +29,42 @@ defineProps<{
     </div>
   </section>
 </template>
+
+<style scoped src="./styles/section-card.css"></style>
+
+<style scoped>
+.list-block {
+  display: grid;
+  gap: 12px;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-tertiary);
+}
+
+.list-row > div:first-child {
+  min-width: 0;
+}
+
+.list-row strong,
+.list-row span {
+  display: block;
+}
+
+.list-row strong {
+  font-size: 14px;
+}
+
+.list-row span {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+</style>

@@ -24,10 +24,16 @@ export interface Order {
   status: number
   callback_num: number
   call_back_confirm: number
+  callback_state: string
+  callback_state_label: string
+  callback_message: string
+  last_callback_at?: string | null
+  can_retry_callback: boolean
 }
 
 type OrderApiRecord = Order & {
   ID?: number
+  created_at?: string
   TradeId?: string
   OrderId?: string
   Amount?: number
@@ -37,6 +43,12 @@ type OrderApiRecord = Order & {
   Status?: number
   CallbackNum?: number
   CallBackConfirm?: number
+  CallbackState?: string
+  CallbackStateLabel?: string
+  CallbackMessage?: string
+  LastCallbackAt?: string | null
+  last_callback_at?: string | null
+  CanRetryCallback?: boolean
 }
 
 export interface OrdersResponse {
@@ -44,6 +56,42 @@ export interface OrdersResponse {
   total: number
   page: number
   limit: number
+}
+
+export interface CallbackEvent {
+  id: number
+  created_at: string
+  trigger_type: string
+  trigger_type_label: string
+  result: string
+  result_label: string
+  message: string
+  attempt_number: number
+}
+
+export interface OperationsSummary {
+  status: string
+  generatedAt: string
+  orders: {
+    pending: number
+    success: number
+    expired: number
+    callbackPending: number
+    callbackFailed: number
+    paidMissingNotifyUrl: number
+  }
+  callbacks: {
+    failedLast24Hours: number
+    manualQueued: number
+    latestFailedAt: string
+    latestSuccessAt: string
+  }
+  wallets: {
+    total: number
+    enabled: number
+    disabled: number
+  }
+  warnings: string[]
 }
 
 export interface Wallet {
@@ -133,7 +181,7 @@ function normalizeWallet(wallet: WalletApiRecord): Wallet {
 function normalizeOrder(order: OrderApiRecord): Order {
   return {
     id: order.id ?? order.ID ?? 0,
-    CreatedAt: order.CreatedAt ?? '',
+    CreatedAt: order.CreatedAt ?? order.created_at ?? '',
     trade_id: order.trade_id ?? order.TradeId ?? '',
     order_id: order.order_id ?? order.OrderId ?? '',
     amount: order.amount ?? order.Amount ?? 0,
@@ -143,12 +191,18 @@ function normalizeOrder(order: OrderApiRecord): Order {
     status: order.status ?? order.Status ?? 0,
     callback_num: order.callback_num ?? order.CallbackNum ?? 0,
     call_back_confirm: order.call_back_confirm ?? order.CallBackConfirm ?? 0,
+    callback_state: order.callback_state ?? order.CallbackState ?? '',
+    callback_state_label: order.callback_state_label ?? order.CallbackStateLabel ?? '',
+    callback_message: order.callback_message ?? order.CallbackMessage ?? '',
+    last_callback_at: order.last_callback_at ?? order.LastCallbackAt ?? null,
+    can_retry_callback: order.can_retry_callback ?? order.CanRetryCallback ?? false,
   }
 }
 
 export const adminApi = {
   // Stats
   getStats: () => api.get<{ code: number; data: Stats }>('/admin/api/stats'),
+  getOperationsSummary: () => api.get<{ code: number; data: OperationsSummary }>('/admin/api/operations/summary'),
 
   // Orders
   getOrders: (params: { page: number; limit: number; search?: string; status?: string }) => {
@@ -170,6 +224,10 @@ export const adminApi = {
         },
       }))
   },
+  retryOrderCallback: (id: number) =>
+    api.post<{ code: number; message: string }>(`/admin/api/orders/${id}/retry-callback`, {}),
+  getOrderCallbackEvents: (id: number) =>
+    api.get<{ code: number; data: { total: number; events: CallbackEvent[] } }>(`/admin/api/orders/${id}/callback-events`),
 
   // Account
   getAccount: () => api.get<{ code: number; data: AdminAccount }>('/admin/api/account'),

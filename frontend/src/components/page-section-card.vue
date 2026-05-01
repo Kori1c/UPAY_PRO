@@ -19,3 +19,5 @@ defineProps<{
     </div>
   </section>
 </template>
+
+<style scoped src="./styles/section-card.css"></style>

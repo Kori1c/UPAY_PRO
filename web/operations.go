@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"time"
 	"upay_pro/db/sdb"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 func registerOperationsRoutes(admin *gin.RouterGroup) {
@@ -24,9 +26,14 @@ func operationsSummaryHandler(c *gin.Context) {
 	var expiredOrderCount int64
 	var callbackPendingCount int64
 	var callbackFailedCount int64
+	var paidMissingNotifyURLCount int64
 	var walletCount int64
 	var enabledWalletCount int64
 	var disabledWalletCount int64
+	var callbackFailedLast24Hours int64
+	var callbackManualQueuedCount int64
+	var latestFailedEvent sdb.CallbackEvent
+	var latestSuccessEvent sdb.CallbackEvent
 
 	counts := []struct {
 		label string
@@ -67,6 +74,30 @@ func operationsSummaryHandler(c *gin.Context) {
 			},
 		},
 		{
+			label: "paid orders missing notify url",
+			query: func() error {
+				return sdb.DB.Model(&sdb.Orders{}).
+					Where("status = ? AND notify_url = ?", sdb.StatusPaySuccess, "").
+					Count(&paidMissingNotifyURLCount).Error
+			},
+		},
+		{
+			label: "callback failed last 24 hours",
+			query: func() error {
+				return sdb.DB.Model(&sdb.CallbackEvent{}).
+					Where("result = ? AND created_at >= ?", sdb.CallbackResultFailed, time.Now().Add(-24*time.Hour)).
+					Count(&callbackFailedLast24Hours).Error
+			},
+		},
+		{
+			label: "callback manual queued",
+			query: func() error {
+				return sdb.DB.Model(&sdb.CallbackEvent{}).
+					Where("trigger_type = ? AND result = ?", sdb.CallbackTriggerManual, sdb.CallbackResultQueued).
+					Count(&callbackManualQueuedCount).Error
+			},
+		},
+		{
 			label: "wallets",
 			query: func() error {
 				return sdb.DB.Model(&sdb.WalletAddress{}).Count(&walletCount).Error
@@ -97,6 +128,23 @@ func operationsSummaryHandler(c *gin.Context) {
 		}
 	}
 
+	if err := sdb.DB.Where("result = ?", sdb.CallbackResultFailed).Order("created_at DESC").First(&latestFailedEvent).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		mylog.Logger.Error("获取最近回调失败时间失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    -1,
+			"message": "获取运营状态失败",
+		})
+		return
+	}
+	if err := sdb.DB.Where("result = ?", sdb.CallbackResultSuccess).Order("created_at DESC").First(&latestSuccessEvent).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		mylog.Logger.Error("获取最近回调成功时间失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    -1,
+			"message": "获取运营状态失败",
+		})
+		return
+	}
+
 	warnings := make([]string, 0)
 	if enabledWalletCount == 0 {
 		warnings = append(warnings, "没有启用中的收款钱包")
@@ -106,6 +154,12 @@ func operationsSummaryHandler(c *gin.Context) {
 	}
 	if callbackFailedCount > 0 {
 		warnings = append(warnings, "存在已发生回调失败的订单")
+	}
+	if paidMissingNotifyURLCount > 0 {
+		warnings = append(warnings, "存在已支付但缺少回调地址的订单")
+	}
+	if callbackFailedLast24Hours > 0 {
+		warnings = append(warnings, "近 24 小时存在回调失败记录")
 	}
 
 	status := "ok"
@@ -120,11 +174,18 @@ func operationsSummaryHandler(c *gin.Context) {
 			"status":      status,
 			"generatedAt": time.Now().Format(time.RFC3339),
 			"orders": gin.H{
-				"pending":         pendingOrderCount,
-				"success":         successOrderCount,
-				"expired":         expiredOrderCount,
-				"callbackPending": callbackPendingCount,
-				"callbackFailed":  callbackFailedCount,
+				"pending":              pendingOrderCount,
+				"success":              successOrderCount,
+				"expired":              expiredOrderCount,
+				"callbackPending":      callbackPendingCount,
+				"callbackFailed":       callbackFailedCount,
+				"paidMissingNotifyUrl": paidMissingNotifyURLCount,
+			},
+			"callbacks": gin.H{
+				"failedLast24Hours": callbackFailedLast24Hours,
+				"manualQueued":      callbackManualQueuedCount,
+				"latestFailedAt":    formatEventTimestamp(latestFailedEvent.CreatedAt),
+				"latestSuccessAt":   formatEventTimestamp(latestSuccessEvent.CreatedAt),
 			},
 			"wallets": gin.H{
 				"total":    walletCount,
@@ -134,4 +195,11 @@ func operationsSummaryHandler(c *gin.Context) {
 			"warnings": warnings,
 		},
 	})
+}
+
+func formatEventTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339)
 }

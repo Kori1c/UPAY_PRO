@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, reactive } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconSafe } from '@arco-design/web-vue/es/icon'
 import { adminApi, type Wallet } from '../../api'
+import AppIcon from '../../components/icons/app-icon.vue'
 import PageSectionCard from '../../components/page-section-card.vue'
 
 const loading = ref(false)
@@ -219,7 +219,7 @@ onMounted(() => {
     <page-section-card v-else title="钱包列表" description="当前还没有可用钱包，先添加正式收款地址再开始接单。">
       <a-empty description="暂无钱包地址">
         <template #image>
-          <icon-safe class="wallet-empty-icon" />
+          <app-icon name="safe" class="wallet-empty-icon" />
         </template>
         <a-button type="primary" @click="handleAdd">立即添加钱包</a-button>
       </a-empty>
@@ -267,12 +267,145 @@ onMounted(() => {
 </template>
 
 <style>
+.wallet-grid {
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.wallet-card {
+  display: grid;
+  gap: 10px;
+}
+
+.wallet-mini-card {
+  padding: 14px;
+}
+
+.wallet-mini-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.wallet-mini-card__title {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.wallet-card__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.wallet-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.wallet-card__rate-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--surface-secondary);
+  white-space: nowrap;
+}
+
+.wallet-card__label {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.wallet-card__rate-inline strong {
+  font-size: 16px;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.wallet-card__body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 16px;
+  background: var(--surface-secondary);
+}
+
+.wallet-card__address-block {
+  min-width: 0;
+}
+
+.wallet-card__address-block strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 15px;
+  line-height: 1.35;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.wallet-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.wallet-card__actions .arco-btn {
+  min-width: 64px;
+}
+
 .wallet-empty-icon {
   font-size: 44px;
   color: var(--text-tertiary);
 }
 
+@media (max-width: 1120px) {
+  .wallet-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
+  .wallet-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wallet-card__topbar,
+  .wallet-card__body {
+    align-items: flex-start;
+  }
+
+  .wallet-mini-card__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .wallet-card__rate-inline {
+    white-space: normal;
+  }
+
+  .wallet-card__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .wallet-card__actions .arco-btn {
+    flex: 1 1 auto;
+  }
+
   .wallet-form-modal {
     width: calc(100vw - 20px) !important;
     border-radius: 22px !important;
@@ -318,6 +451,12 @@ onMounted(() => {
     display: flex;
     flex-wrap: wrap;
     gap: 16px;
+  }
+}
+
+@media (max-width: 520px) {
+  .wallet-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

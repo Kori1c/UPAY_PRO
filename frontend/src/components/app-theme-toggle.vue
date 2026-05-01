@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { IconMoonFill, IconSunFill } from '@arco-design/web-vue/es/icon'
 
+import AppIcon from './icons/app-icon.vue'
 import { useAppStore } from '../stores/app'
 
 const appStore = useAppStore()
@@ -17,8 +17,8 @@ function handleToggle() {
   <div class="theme-toggle" :data-system="appStore.themePreference === 'system'">
     <a-button class="theme-toggle__button" shape="circle" size="large" @click="handleToggle">
       <template #icon>
-        <icon-sun-fill v-if="isDark" />
-        <icon-moon-fill v-else />
+        <app-icon v-if="isDark" name="sun-fill" />
+        <app-icon v-else name="moon-fill" />
       </template>
     </a-button>
   </div>

@@ -140,17 +140,25 @@ func Start() {
 				})
 				return
 			}
+
+			items := make([]orderListItem, 0, len(orders))
+			for _, order := range orders {
+				items = append(items, buildOrderListItem(order))
+			}
+
 			c.JSON(http.StatusOK, gin.H{
 				"code": 0,
 				"msg":  "success",
 				"data": gin.H{
-					"orders": orders,
+					"orders": items,
 					"total":  total,
 					"page":   page,
 					"limit":  limit,
 				},
 			})
 		})
+		admin.POST("/api/orders/:id/retry-callback", handleRetryOrderCallback)
+		admin.GET("/api/orders/:id/callback-events", handleListOrderCallbackEvents)
 
 		// 钱包地址管理API
 		admin.GET("/api/wallets", func(c *gin.Context) {

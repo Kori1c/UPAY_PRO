@@ -213,6 +213,17 @@ func TestOperationsSummaryReturnsActionableRuntimeSignals(t *testing.T) {
 			CallBackConfirm: sdb.CallBackConfirmNo,
 		},
 		{
+			TradeId:         "OPS-NO-NOTIFY-001",
+			OrderId:         "OPS-NO-NOTIFY-001",
+			Amount:          12,
+			ActualAmount:    12,
+			Type:            "USDT-TRC20",
+			Token:           "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+			Status:          sdb.StatusPaySuccess,
+			NotifyUrl:       "",
+			CallBackConfirm: sdb.CallBackConfirmNo,
+		},
+		{
 			TradeId:      "OPS-EXPIRED-001",
 			OrderId:      "OPS-EXPIRED-001",
 			Amount:       13,
@@ -234,6 +245,30 @@ func TestOperationsSummaryReturnsActionableRuntimeSignals(t *testing.T) {
 		t.Fatalf("failed to seed disabled wallet: %v", err)
 	}
 
+	failedAt := time.Now().Add(-2 * time.Hour)
+	succeededAt := time.Now().Add(-30 * time.Minute)
+	if err := testEnv.db.Create(&[]sdb.CallbackEvent{
+		{
+			Model:         gorm.Model{CreatedAt: failedAt},
+			OrderRowID:    3,
+			TradeID:       "OPS-CALLBACK-001",
+			TriggerType:   sdb.CallbackTriggerAuto,
+			Result:        sdb.CallbackResultFailed,
+			Message:       "签名错误",
+			AttemptNumber: 2,
+		},
+		{
+			Model:         gorm.Model{CreatedAt: succeededAt},
+			OrderRowID:    2,
+			TradeID:       "OPS-SUCCESS-001",
+			TriggerType:   sdb.CallbackTriggerAuto,
+			Result:        sdb.CallbackResultSuccess,
+			AttemptNumber: 1,
+		},
+	}).Error; err != nil {
+		t.Fatalf("failed to seed callback events: %v", err)
+	}
+
 	router := gin.New()
 	admin := router.Group("/admin")
 	registerOperationsRoutes(admin)
@@ -251,12 +286,19 @@ func TestOperationsSummaryReturnsActionableRuntimeSignals(t *testing.T) {
 		Data struct {
 			Status string `json:"status"`
 			Orders struct {
-				Pending         int64 `json:"pending"`
-				Success         int64 `json:"success"`
-				Expired         int64 `json:"expired"`
-				CallbackPending int64 `json:"callbackPending"`
-				CallbackFailed  int64 `json:"callbackFailed"`
+				Pending              int64 `json:"pending"`
+				Success              int64 `json:"success"`
+				Expired              int64 `json:"expired"`
+				CallbackPending      int64 `json:"callbackPending"`
+				CallbackFailed       int64 `json:"callbackFailed"`
+				PaidMissingNotifyURL int64 `json:"paidMissingNotifyUrl"`
 			} `json:"orders"`
+			Callbacks struct {
+				FailedLast24Hours int64  `json:"failedLast24Hours"`
+				ManualQueued      int64  `json:"manualQueued"`
+				LatestFailedAt    string `json:"latestFailedAt"`
+				LatestSuccessAt   string `json:"latestSuccessAt"`
+			} `json:"callbacks"`
 			Wallets struct {
 				Total    int64 `json:"total"`
 				Enabled  int64 `json:"enabled"`
@@ -272,11 +314,20 @@ func TestOperationsSummaryReturnsActionableRuntimeSignals(t *testing.T) {
 	if body.Data.Status != "warning" {
 		t.Fatalf("expected warning status, got %q", body.Data.Status)
 	}
-	if body.Data.Orders.Pending != 1 || body.Data.Orders.Success != 2 || body.Data.Orders.Expired != 1 {
+	if body.Data.Orders.Pending != 1 || body.Data.Orders.Success != 3 || body.Data.Orders.Expired != 1 {
 		t.Fatalf("unexpected order counts: %#v", body.Data.Orders)
 	}
 	if body.Data.Orders.CallbackPending != 1 || body.Data.Orders.CallbackFailed != 1 {
 		t.Fatalf("unexpected callback counts: %#v", body.Data.Orders)
+	}
+	if body.Data.Orders.PaidMissingNotifyURL != 1 {
+		t.Fatalf("expected 1 paid order missing notify url, got %#v", body.Data.Orders)
+	}
+	if body.Data.Callbacks.FailedLast24Hours != 1 || body.Data.Callbacks.ManualQueued != 0 {
+		t.Fatalf("unexpected callback metrics: %#v", body.Data.Callbacks)
+	}
+	if body.Data.Callbacks.LatestFailedAt == "" || body.Data.Callbacks.LatestSuccessAt == "" {
+		t.Fatalf("expected latest callback timestamps, got %#v", body.Data.Callbacks)
 	}
 	if body.Data.Wallets.Total != 2 || body.Data.Wallets.Enabled != 1 || body.Data.Wallets.Disabled != 1 {
 		t.Fatalf("unexpected wallet counts: %#v", body.Data.Wallets)
@@ -671,6 +722,393 @@ func TestDeleteLastPasskeyBlockedWhenPasswordLoginDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildOrderListItemCallbackState(t *testing.T) {
+	now := time.Now()
+
+	testCases := []struct {
+		name             string
+		order            sdb.Orders
+		expectedState    string
+		expectedLabel    string
+		expectedMessage  string
+		expectCallbackAt bool
+		expectedCanRetry bool
+	}{
+		{
+			name: "unpaid order does not trigger callback",
+			order: sdb.Orders{
+				Model:     gorm.Model{ID: 1, CreatedAt: now},
+				TradeId:   "ORDER-UNPAID",
+				OrderId:   "ORDER-UNPAID",
+				Status:    sdb.StatusWaitPay,
+				NotifyUrl: "https://example.com/notify",
+			},
+			expectedState:    "not_applicable",
+			expectedLabel:    "未触发",
+			expectedMessage:  "",
+			expectCallbackAt: false,
+			expectedCanRetry: false,
+		},
+		{
+			name: "paid order without notify url is not applicable",
+			order: sdb.Orders{
+				Model:     gorm.Model{ID: 2, CreatedAt: now},
+				TradeId:   "ORDER-NO-NOTIFY",
+				OrderId:   "ORDER-NO-NOTIFY",
+				Status:    sdb.StatusPaySuccess,
+				NotifyUrl: "",
+			},
+			expectedState:    "not_applicable",
+			expectedLabel:    "无需回调",
+			expectedMessage:  "",
+			expectCallbackAt: false,
+			expectedCanRetry: false,
+		},
+		{
+			name: "confirmed callback order is confirmed",
+			order: sdb.Orders{
+				Model:           gorm.Model{ID: 3, CreatedAt: now},
+				TradeId:         "ORDER-CONFIRMED",
+				OrderId:         "ORDER-CONFIRMED",
+				Status:          sdb.StatusPaySuccess,
+				NotifyUrl:       "https://example.com/notify",
+				CallBackConfirm: sdb.CallBackConfirmOk,
+			},
+			expectedState:    "confirmed",
+			expectedLabel:    "已确认",
+			expectedMessage:  "",
+			expectCallbackAt: false,
+			expectedCanRetry: false,
+		},
+		{
+			name: "failed callback order keeps latest failure reason",
+			order: sdb.Orders{
+				Model:           gorm.Model{ID: 4, CreatedAt: now},
+				TradeId:         "ORDER-FAILED",
+				OrderId:         "ORDER-FAILED",
+				Status:          sdb.StatusPaySuccess,
+				NotifyUrl:       "https://example.com/notify",
+				CallbackNum:     2,
+				CallbackMessage: "签名验证失败",
+				LastCallbackAt:  &now,
+				CallBackConfirm: sdb.CallBackConfirmNo,
+			},
+			expectedState:    "failed",
+			expectedLabel:    "回调失败",
+			expectedMessage:  "签名验证失败",
+			expectCallbackAt: true,
+			expectedCanRetry: true,
+		},
+		{
+			name: "paid order without attempts is pending callback",
+			order: sdb.Orders{
+				Model:           gorm.Model{ID: 5, CreatedAt: now},
+				TradeId:         "ORDER-PENDING",
+				OrderId:         "ORDER-PENDING",
+				Status:          sdb.StatusPaySuccess,
+				NotifyUrl:       "https://example.com/notify",
+				CallbackNum:     0,
+				CallBackConfirm: sdb.CallBackConfirmNo,
+			},
+			expectedState:    "pending",
+			expectedLabel:    "待回调",
+			expectedMessage:  "",
+			expectCallbackAt: false,
+			expectedCanRetry: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			item := buildOrderListItem(tc.order)
+
+			if item.CallbackState != tc.expectedState {
+				t.Fatalf("expected callback state %q, got %q", tc.expectedState, item.CallbackState)
+			}
+			if item.CallbackStateLabel != tc.expectedLabel {
+				t.Fatalf("expected callback label %q, got %q", tc.expectedLabel, item.CallbackStateLabel)
+			}
+			if item.CallbackMessage != tc.expectedMessage {
+				t.Fatalf("expected callback message %q, got %q", tc.expectedMessage, item.CallbackMessage)
+			}
+			if tc.expectCallbackAt && item.LastCallbackAt == nil {
+				t.Fatal("expected last_callback_at to be present")
+			}
+			if !tc.expectCallbackAt && item.LastCallbackAt != nil {
+				t.Fatalf("expected last_callback_at to be nil, got %v", item.LastCallbackAt)
+			}
+			if item.CanRetryCallback != tc.expectedCanRetry {
+				t.Fatalf("expected can_retry_callback %v, got %v", tc.expectedCanRetry, item.CanRetryCallback)
+			}
+		})
+	}
+}
+
+func TestRetryOrderCallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	testEnv := setupCreateOrderTestEnv(t)
+
+	eligible := sdb.Orders{
+		TradeId:         "RETRY-OK-001",
+		OrderId:         "RETRY-OK-001",
+		Amount:          10,
+		ActualAmount:    10,
+		Type:            "USDT-TRC20",
+		Token:           "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+		Status:          sdb.StatusPaySuccess,
+		NotifyUrl:       "https://example.com/notify",
+		CallBackConfirm: sdb.CallBackConfirmNo,
+	}
+	unpaid := sdb.Orders{
+		TradeId:         "RETRY-WAIT-001",
+		OrderId:         "RETRY-WAIT-001",
+		Amount:          11,
+		ActualAmount:    11,
+		Type:            "USDT-TRC20",
+		Token:           "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+		Status:          sdb.StatusWaitPay,
+		NotifyUrl:       "https://example.com/notify",
+		CallBackConfirm: sdb.CallBackConfirmNo,
+	}
+	confirmed := sdb.Orders{
+		TradeId:         "RETRY-DONE-001",
+		OrderId:         "RETRY-DONE-001",
+		Amount:          12,
+		ActualAmount:    12,
+		Type:            "USDT-TRC20",
+		Token:           "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+		Status:          sdb.StatusPaySuccess,
+		NotifyUrl:       "https://example.com/notify",
+		CallBackConfirm: sdb.CallBackConfirmOk,
+	}
+	noNotify := sdb.Orders{
+		TradeId:         "RETRY-NONE-001",
+		OrderId:         "RETRY-NONE-001",
+		Amount:          13,
+		ActualAmount:    13,
+		Type:            "USDT-TRC20",
+		Token:           "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+		Status:          sdb.StatusPaySuccess,
+		NotifyUrl:       "",
+		CallBackConfirm: sdb.CallBackConfirmNo,
+	}
+
+	if err := testEnv.db.Create(&[]sdb.Orders{eligible, unpaid, confirmed, noNotify}).Error; err != nil {
+		t.Fatalf("failed to seed orders: %v", err)
+	}
+
+	var savedOrders []sdb.Orders
+	if err := testEnv.db.Order("id ASC").Find(&savedOrders).Error; err != nil {
+		t.Fatalf("failed to load seeded orders: %v", err)
+	}
+	if len(savedOrders) != 4 {
+		t.Fatalf("expected 4 seeded orders, got %d", len(savedOrders))
+	}
+
+	triggered := make([]string, 0, 1)
+	originalTrigger := triggerOrderCallbackAsync
+	triggerOrderCallbackAsync = func(order sdb.Orders) {
+		triggered = append(triggered, order.TradeId)
+	}
+	t.Cleanup(func() {
+		triggerOrderCallbackAsync = originalTrigger
+	})
+
+	router := gin.New()
+	admin := router.Group("/admin")
+	admin.POST("/api/orders/:id/retry-callback", handleRetryOrderCallback)
+
+	testCases := []struct {
+		name           string
+		orderID        uint
+		expectedStatus int
+		expectedCode   int
+		expectedCalls  int
+	}{
+		{
+			name:           "eligible order triggers retry",
+			orderID:        savedOrders[0].ID,
+			expectedStatus: http.StatusOK,
+			expectedCode:   0,
+			expectedCalls:  1,
+		},
+		{
+			name:           "unpaid order cannot retry",
+			orderID:        savedOrders[1].ID,
+			expectedStatus: http.StatusBadRequest,
+			expectedCode:   1,
+			expectedCalls:  1,
+		},
+		{
+			name:           "confirmed order cannot retry",
+			orderID:        savedOrders[2].ID,
+			expectedStatus: http.StatusBadRequest,
+			expectedCode:   1,
+			expectedCalls:  1,
+		},
+		{
+			name:           "order without notify url cannot retry",
+			orderID:        savedOrders[3].ID,
+			expectedStatus: http.StatusBadRequest,
+			expectedCode:   1,
+			expectedCalls:  1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/admin/api/orders/%d/retry-callback", tc.orderID), nil)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.expectedStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.expectedStatus, w.Code, w.Body.String())
+			}
+
+			var body struct {
+				Code int `json:"code"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+			if body.Code != tc.expectedCode {
+				t.Fatalf("expected code %d, got %d", tc.expectedCode, body.Code)
+			}
+			if len(triggered) != tc.expectedCalls {
+				t.Fatalf("expected retry trigger count %d, got %d", tc.expectedCalls, len(triggered))
+			}
+		})
+	}
+
+	var queuedEvents []sdb.CallbackEvent
+	if err := testEnv.db.Where("order_row_id = ? AND trigger_type = ? AND result = ?", savedOrders[0].ID, sdb.CallbackTriggerManual, sdb.CallbackResultQueued).Find(&queuedEvents).Error; err != nil {
+		t.Fatalf("failed to query queued retry events: %v", err)
+	}
+	if len(queuedEvents) != 1 {
+		t.Fatalf("expected 1 queued callback event for eligible order, got %d", len(queuedEvents))
+	}
+}
+
+func TestListOrderCallbackEvents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	testEnv := setupCreateOrderTestEnv(t)
+
+	order := sdb.Orders{
+		TradeId:         "CALLBACK-HISTORY-001",
+		OrderId:         "CALLBACK-HISTORY-001",
+		Amount:          10,
+		ActualAmount:    10,
+		Type:            "USDT-TRC20",
+		Token:           "TJRyWwFs9wTFGZg3JbrVriFbNfCug5tDeC",
+		Status:          sdb.StatusPaySuccess,
+		NotifyUrl:       "https://example.com/notify",
+		CallBackConfirm: sdb.CallBackConfirmNo,
+	}
+	if err := testEnv.db.Create(&order).Error; err != nil {
+		t.Fatalf("failed to seed order: %v", err)
+	}
+
+	oldest := time.Now().Add(-5 * time.Minute)
+	middle := time.Now().Add(-3 * time.Minute)
+	latest := time.Now().Add(-1 * time.Minute)
+	events := []sdb.CallbackEvent{
+		{
+			Model:         gorm.Model{CreatedAt: oldest},
+			OrderRowID:    order.ID,
+			TradeID:       order.TradeId,
+			TriggerType:   sdb.CallbackTriggerAuto,
+			Result:        sdb.CallbackResultFailed,
+			Message:       "请求超时",
+			AttemptNumber: 1,
+		},
+		{
+			Model:         gorm.Model{CreatedAt: middle},
+			OrderRowID:    order.ID,
+			TradeID:       order.TradeId,
+			TriggerType:   sdb.CallbackTriggerManual,
+			Result:        sdb.CallbackResultQueued,
+			Message:       "管理员手动触发补发",
+			AttemptNumber: 0,
+		},
+		{
+			Model:         gorm.Model{CreatedAt: latest},
+			OrderRowID:    order.ID,
+			TradeID:       order.TradeId,
+			TriggerType:   sdb.CallbackTriggerManual,
+			Result:        sdb.CallbackResultSuccess,
+			Message:       "",
+			AttemptNumber: 2,
+		},
+	}
+	if err := testEnv.db.Create(&events).Error; err != nil {
+		t.Fatalf("failed to seed callback events: %v", err)
+	}
+
+	router := gin.New()
+	admin := router.Group("/admin")
+	admin.GET("/api/orders/:id/callback-events", handleListOrderCallbackEvents)
+
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/admin/api/orders/%d/callback-events", order.ID), nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var body struct {
+		Code int `json:"code"`
+		Data struct {
+			Total  int                        `json:"total"`
+			Events []callbackEventHistoryItem `json:"events"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if body.Code != 0 {
+		t.Fatalf("expected code 0, got %d", body.Code)
+	}
+	if body.Data.Total != 3 {
+		t.Fatalf("expected total 3, got %d", body.Data.Total)
+	}
+	if len(body.Data.Events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(body.Data.Events))
+	}
+
+	if body.Data.Events[0].Result != sdb.CallbackResultSuccess || body.Data.Events[0].TriggerType != sdb.CallbackTriggerManual {
+		t.Fatalf("expected newest event to be manual success, got %#v", body.Data.Events[0])
+	}
+	if body.Data.Events[0].ResultLabel != "回调成功" {
+		t.Fatalf("expected success label, got %q", body.Data.Events[0].ResultLabel)
+	}
+	if body.Data.Events[1].Result != sdb.CallbackResultQueued || body.Data.Events[1].TriggerTypeLabel != "手动补发" {
+		t.Fatalf("expected middle event to be manual queued, got %#v", body.Data.Events[1])
+	}
+	if body.Data.Events[2].Message != "请求超时" || body.Data.Events[2].ResultLabel != "回调失败" {
+		t.Fatalf("expected oldest event to preserve failure reason, got %#v", body.Data.Events[2])
+	}
+}
+
+func TestListOrderCallbackEventsReturnsNotFoundForUnknownOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupCreateOrderTestEnv(t)
+
+	router := gin.New()
+	admin := router.Group("/admin")
+	admin.GET("/api/orders/:id/callback-events", handleListOrderCallbackEvents)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/orders/999999/callback-events", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 type createOrderTestEnv struct {
 	db *gorm.DB
 }
@@ -690,7 +1128,7 @@ func setupCreateOrderTestEnv(t *testing.T) createOrderTestEnv {
 		t.Fatalf("failed to open temp sqlite db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&sdb.Orders{}, &sdb.WalletAddress{}, &sdb.Setting{}, &sdb.TradeIdTaskID{}); err != nil {
+	if err := db.AutoMigrate(&sdb.Orders{}, &sdb.CallbackEvent{}, &sdb.WalletAddress{}, &sdb.Setting{}, &sdb.TradeIdTaskID{}); err != nil {
 		t.Fatalf("failed to migrate temp sqlite db: %v", err)
 	}
 

@@ -1,11 +1,4 @@
 import type { RouteRecordRaw } from 'vue-router'
-import {
-  IconApps,
-  IconDashboard,
-  IconLock,
-  IconSafe,
-  IconStorage,
-} from '@arco-design/web-vue/es/icon'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -19,7 +12,7 @@ export type NavigationItem = {
   key: string
   label: string
   path: string
-  icon: unknown
+  icon: 'apps' | 'dashboard' | 'lock' | 'safe' | 'storage'
 }
 
 export const adminNavigationItems: NavigationItem[] = [
@@ -27,31 +20,31 @@ export const adminNavigationItems: NavigationItem[] = [
     key: 'dashboard',
     label: '仪表盘',
     path: '/dashboard',
-    icon: IconDashboard,
+    icon: 'dashboard',
   },
   {
     key: 'orders',
     label: '订单管理',
     path: '/orders',
-    icon: IconApps,
+    icon: 'apps',
   },
   {
     key: 'wallets',
     label: '钱包管理',
     path: '/wallets',
-    icon: IconStorage,
+    icon: 'storage',
   },
   {
     key: 'settings',
     label: '系统设置',
     path: '/settings',
-    icon: IconSafe,
+    icon: 'safe',
   },
   {
     key: 'apikeys',
     label: '密钥',
     path: '/apikeys',
-    icon: IconLock,
+    icon: 'lock',
   },
 ]
 

@@ -67,6 +67,12 @@ func dispatchNotificationWithRetry(name string, order sdb.Orders, send func(sdb.
 	}
 }
 
+func recordCallbackEventBestEffort(order sdb.Orders, triggerType string, result string, message string, attemptNumber int) {
+	if err := sdb.RecordCallbackEvent(order, triggerType, result, message, attemptNumber); err != nil {
+		mylog.Logger.Error("记录回调历史失败", zap.String("trade_id", order.TradeId), zap.Error(err))
+	}
+}
+
 // 定义一个任务结构体 UsdtRateJob
 // 负责定期检查未支付订单的支付状态，并在支付成功后更新订单状态、发送通知和回调
 type UsdtCheckJob struct{}
@@ -421,6 +427,10 @@ func unlockWalletAddressAndAmount(v sdb.Orders) {
 
 // 异步回调
 func ProcessCallback(v sdb.Orders) {
+	ProcessCallbackWithSource(v, sdb.CallbackTriggerAuto)
+}
+
+func ProcessCallbackWithSource(v sdb.Orders, triggerType string) {
 	// 先判断一下异步回调状态，如果已经回调了，则不处理
 	if v.CallBackConfirm == sdb.CallBackConfirmOk {
 		return
@@ -435,6 +445,10 @@ func ProcessCallback(v sdb.Orders) {
 	// 判断一下是否已经支付，没有支付，直接返回，不处理
 	if v1.Status != sdb.StatusPaySuccess {
 		mylog.Logger.Info("订单未支付，不需要异步回调", zap.Any("订单号：%s", v1.TradeId))
+		return
+	}
+	if strings.TrimSpace(v1.NotifyUrl) == "" {
+		mylog.Logger.Info("订单未配置异步回调地址，跳过回调处理", zap.String("trade_id", v1.TradeId))
 		return
 	}
 
@@ -461,11 +475,19 @@ func ProcessCallback(v sdb.Orders) {
 	// 使用事务简化回调确认
 
 	for i := 0; i < 5; i++ {
+		callbackAttemptAt := time.Now()
 		ok, err := sendAsyncPost(v1.NotifyUrl, paymentNotification)
 		if ok == "ok" && err == nil {
+			recordCallbackEventBestEffort(v1, triggerType, sdb.CallbackResultSuccess, "", i+1)
 			err = sdb.DB.Transaction(func(tx *gorm.DB) error {
 				v1.CallBackConfirm = sdb.CallBackConfirmOk
-				return tx.Save(v1).Error
+				v1.CallbackMessage = ""
+				v1.LastCallbackAt = &callbackAttemptAt
+				return tx.Model(&sdb.Orders{}).Where("id = ?", v1.ID).Updates(map[string]interface{}{
+					"call_back_confirm": sdb.CallBackConfirmOk,
+					"callback_message":  "",
+					"last_callback_at":  callbackAttemptAt,
+				}).Error
 			})
 			if err != nil {
 				mylog.Logger.Info("更新回调确认状态失败", zap.Any("err", err))
@@ -480,15 +502,17 @@ func ProcessCallback(v sdb.Orders) {
 		if err != nil {
 
 			mylog.Logger.Info("异步回调失败", zap.Any("err", err))
-			// 回调次数+1
-			// sdb.DB.Model(&v).Update("callback_num", i+1)
-			// sdb.DB.Model(&v).UpdateColumn("callback_num", gorm.Expr("callback_num + 1"))
-			// if err := sdb.DB.Model(&v).UpdateColumn("callback_num", gorm.Expr("callback_num + ?", 1)).Error; err != nil {
-			// 	mylog.Logger.Info("更新回调失败次数失败", zap.Any("err", err))
-			// }
-			if err := sdb.DB.Model(&v1).UpdateColumn("callback_num", gorm.Expr("callback_num + ?", 1)).Error; err != nil {
+			v1.CallbackMessage = err.Error()
+			v1.LastCallbackAt = &callbackAttemptAt
+			recordCallbackEventBestEffort(v1, triggerType, sdb.CallbackResultFailed, v1.CallbackMessage, i+1)
+			if err := sdb.DB.Model(&sdb.Orders{}).Where("id = ?", v1.ID).Updates(map[string]interface{}{
+				"callback_num":     gorm.Expr("callback_num + ?", 1),
+				"callback_message": v1.CallbackMessage,
+				"last_callback_at": callbackAttemptAt,
+			}).Error; err != nil {
 				mylog.Logger.Info("更新回调失败次数失败", zap.Any("err", err))
 			}
+			v1.CallbackNum++
 			// 延迟5秒
 			time.Sleep(5 * time.Second)
 

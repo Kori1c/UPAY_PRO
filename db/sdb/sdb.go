@@ -47,6 +47,17 @@ const (
 	CallBackConfirmNo = 2 // 回调未确认
 )
 
+const (
+	CallbackTriggerAuto   = "auto"
+	CallbackTriggerManual = "manual"
+)
+
+const (
+	CallbackResultQueued  = "queued"
+	CallbackResultSuccess = "success"
+	CallbackResultFailed  = "failed"
+)
+
 // 订单表
 type Orders struct {
 	gorm.Model
@@ -63,9 +74,21 @@ type Orders struct {
 	RedirectUrl     string // 同步回调地址
 	CallbackNum     int    // 回调次数
 	CallBackConfirm int    // 回调是否已确认 1是 2否
-	StartTime       int64  // 订单开始时间（时间戳）
-	ExpirationTime  int64  // 订单过期时间（时间戳）
+	CallbackMessage string // 最近一次回调结果说明
+	LastCallbackAt  *time.Time
+	StartTime       int64 // 订单开始时间（时间戳）
+	ExpirationTime  int64 // 订单过期时间（时间戳）
 
+}
+
+type CallbackEvent struct {
+	gorm.Model
+	OrderRowID    uint   `gorm:"index"`
+	TradeID       string `gorm:"index"`
+	TriggerType   string
+	Result        string
+	Message       string
+	AttemptNumber int
 }
 
 // 钱包状态
@@ -186,6 +209,7 @@ func Start() {
 
 	// 迁移订单表
 	DB.AutoMigrate(&Orders{})
+	DB.AutoMigrate(&CallbackEvent{})
 	// 迁移钱包地址表
 	DB.AutoMigrate(&WalletAddress{})
 	// 迁移设置表
@@ -266,6 +290,19 @@ func Start() {
 	// 迁移汇率维护表
 	// DB.AutoMigrate(&AutoRate{})
 
+}
+
+func RecordCallbackEvent(order Orders, triggerType string, result string, message string, attemptNumber int) error {
+	event := CallbackEvent{
+		OrderRowID:    order.ID,
+		TradeID:       order.TradeId,
+		TriggerType:   triggerType,
+		Result:        result,
+		Message:       message,
+		AttemptNumber: attemptNumber,
+	}
+
+	return DB.Create(&event).Error
 }
 
 const (
