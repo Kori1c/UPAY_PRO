@@ -1,8 +1,6 @@
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${UPAY_IMAGE:-ghcr.io/kori1c/upay-pro:latest}
     container_name: upay-pro-app
     depends_on:
       redis:

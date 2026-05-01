@@ -7,7 +7,8 @@
 ## Ready
 
 - 管理后台已切换到 Vue 3 + Vite，并完成当前主流程联调
-- 本地 Docker 环境可直接使用 `docker compose up -d --build` 启动
+- 推荐使用预构建 Docker 镜像：`docker compose pull && docker compose up -d`
+- 如需本地源码构建，可使用 `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`
 - 默认后台账号密码为 `admin / admin`
 - 登录、订单管理、钱包管理、系统设置、支付页已完成当前版本联调
 - 支付成功后的异步回调链路已在 Docker 环境完成实测

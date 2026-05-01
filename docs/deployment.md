@@ -16,10 +16,10 @@
 - 2 GB 内存
 - 20 GB 以上磁盘
 
-## 2. 获取代码
+## 2. 获取部署文件
 
 ```bash
-git clone <your-private-repo-url>
+git clone https://github.com/Kori1c/UPAY_PRO.git
 cd UPAY_PRO
 ```
 
@@ -35,12 +35,15 @@ cd UPAY_PRO
 
 ## 4. 启动方式
 
-### 方式 A：Docker Compose
+### 方式 A：Docker Compose 镜像部署（推荐）
 
-推荐使用仓库自带的 `docker-compose.yml`。
+推荐使用仓库自带的 `docker-compose.yml`，默认会拉取预构建镜像：
+
+- `ghcr.io/kori1c/upay-pro:latest`
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 查看状态：
@@ -155,11 +158,21 @@ GET /healthz
 
 ## 9. 升级方式
 
-### Docker Compose 升级
+### Docker Compose 镜像升级
 
 ```bash
 git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
+```
+
+### 从源码构建镜像
+
+如果你需要在服务器本地构建镜像，可以使用覆盖文件：
+
+```bash
+git pull
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
 升级前建议先备份：
