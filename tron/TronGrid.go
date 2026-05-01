@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"upay_pro/db/sdb"
 	"upay_pro/mylog"
@@ -53,11 +55,52 @@ type ApiResponseGrid struct {
 	Meta    Meta              `json:"meta"`
 }
 
+const tronGridRateLimitCooldown = time.Minute
+
+var tronGridCooldownUntil atomic.Int64
+
+func shouldSkipTronGrid(now time.Time) bool {
+	return now.UnixNano() < tronGridCooldownUntil.Load()
+}
+
+func resetTronGridCooldown() {
+	tronGridCooldownUntil.Store(0)
+}
+
+func updateTronGridCooldown(now time.Time, resp *http.Response) time.Time {
+	cooldown := tronGridRateLimitCooldown
+	if resp != nil {
+		if retryAfter := strings.TrimSpace(resp.Header.Get("Retry-After")); retryAfter != "" {
+			if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+				cooldown = time.Duration(seconds) * time.Second
+			}
+		}
+	}
+
+	until := now.Add(cooldown)
+	tronGridCooldownUntil.Store(until.UnixNano())
+	return until
+}
+
 // --- 结束 JSON 结构体定义 ---
 
 // 传入钱包地址
 // 注意：startTime 和 endTime 参数当前未在此函数实现中使用
 func GetTransactionsGrid(order sdb.Orders) bool {
+	if !isLikelyTronAddress(order.Token) {
+		disableInvalidWallet(order)
+		warnInvalidTronAddressOnce("trongrid", order)
+		return false
+	}
+
+	now := time.Now()
+	if shouldSkipTronGrid(now) {
+		mylog.Logger.Warn("跳过 TronGrid 查询：处于限流冷却期",
+			zap.String("order_id", order.TradeId),
+			zap.Time("cooldown_until", time.Unix(0, tronGridCooldownUntil.Load())),
+		)
+		return false
+	}
 
 	// 1. 构造请求 URL
 	// 注意：这里硬编码了合约地址和 limit=1，根据需要可以将其作为参数传入
@@ -99,9 +142,20 @@ func GetTransactionsGrid(order sdb.Orders) bool {
 
 	// 检查 HTTP 状态码
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests {
+			cooldownUntil := updateTronGridCooldown(now, resp)
+			mylog.Logger.Warn("TronGrid 触发限流，进入冷却期",
+				zap.String("order_id", order.TradeId),
+				zap.Int("statusCode", resp.StatusCode),
+				zap.Time("cooldown_until", cooldownUntil),
+			)
+			return false
+		}
 		mylog.Logger.Error("USDT_TronGrid请求失败", zap.Int("statusCode", resp.StatusCode))
 		return false
 	}
+
+	resetTronGridCooldown()
 
 	// 4. 解析 返回的JSON 数据到结构体
 	var apiResponse ApiResponseGrid

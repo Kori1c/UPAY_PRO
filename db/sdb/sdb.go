@@ -2,9 +2,10 @@ package sdb
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"fmt"
-	"math/rand"
 	"os"
+	"strconv"
 	"time"
 	"upay_pro/mylog"
 
@@ -97,6 +98,8 @@ type Setting struct {
 	gorm.Model
 	AppUrl                 string
 	SecretKey              string
+	JWTSecret              string
+	PasswordLoginEnabled   bool `gorm:"default:true"`
 	Httpport               int
 	Tgbotkey               string
 	Tgchatid               string
@@ -109,6 +112,31 @@ type Setting struct {
 	AppName                string //应用名称
 	CustomerServiceContact string //客户服务联系方式
 
+}
+
+type PasskeyCredential struct {
+	gorm.Model
+	UserID            uint   `gorm:"index"`
+	CredentialID      string `gorm:"uniqueIndex"`
+	CredentialIDB64   string `gorm:"uniqueIndex"`
+	PublicKey         []byte
+	CredentialJSON    []byte
+	AttestationType   string
+	AttestationFormat string
+	AAGUID            string
+	SignCount         uint32
+	Transports        string
+	DeviceLabel       string
+	LastUsedAt        *time.Time
+}
+
+type PasskeyChallenge struct {
+	gorm.Model
+	UserID      *uint  `gorm:"index"`
+	FlowType    string `gorm:"index"`
+	ChallengeID string `gorm:"uniqueIndex"`
+	SessionData string
+	ExpiresAt   time.Time `gorm:"index"`
 }
 type ApiKey struct {
 	gorm.Model
@@ -161,7 +189,15 @@ func Start() {
 	// 迁移钱包地址表
 	DB.AutoMigrate(&WalletAddress{})
 	// 迁移设置表
+	hadPasswordLoginColumn := DB.Migrator().HasColumn(&Setting{}, "password_login_enabled")
 	DB.AutoMigrate(&Setting{})
+	if !hadPasswordLoginColumn {
+		if err := DB.Model(&Setting{}).Where("1 = 1").Update("PasswordLoginEnabled", true).Error; err != nil {
+			mylog.Logger.Error("初始化密码登录开关失败", zap.Error(err))
+		}
+	}
+	// 迁移 Passkey 表
+	DB.AutoMigrate(&PasskeyCredential{}, &PasskeyChallenge{})
 	//迁移apikey表
 	DB.AutoMigrate(&ApiKey{})
 	// 检查设置表是否为空，如果为空则插入默认设置
@@ -171,16 +207,18 @@ func Start() {
 	if settingCount == 0 {
 		mylog.Logger.Info("设置表为空，创建默认设置")
 		result := DB.Create(&Setting{
-			AppUrl:                 "http://localhost",
+			AppUrl:                 envString("UPAY_APP_URL", "http://localhost"),
 			SecretKey:              GenerateSecretKey(48),
-			Httpport:               8090,
+			JWTSecret:              GenerateSecretKey(48),
+			PasswordLoginEnabled:   true,
+			Httpport:               envInt("UPAY_HTTP_PORT", 8090),
 			Tgbotkey:               "",
 			Tgchatid:               "",
 			Barkkey:                "",
-			Redishost:              "127.0.0.1",
-			Redisport:              6379,
-			Redispasswd:            "",
-			Redisdb:                0,
+			Redishost:              envString("UPAY_REDIS_HOST", "127.0.0.1"),
+			Redisport:              envInt("UPAY_REDIS_PORT", 6379),
+			Redispasswd:            envString("UPAY_REDIS_PASSWORD", ""),
+			Redisdb:                envInt("UPAY_REDIS_DB", 0),
 			ExpirationDate:         ExpirationDate,
 			AppName:                "",
 			CustomerServiceContact: "",
@@ -192,6 +230,20 @@ func Start() {
 		}
 	}
 
+	var setting Setting
+	if err := DB.First(&setting).Error; err == nil && setting.JWTSecret == "" {
+		jwtSecret := setting.SecretKey
+		if jwtSecret == "" {
+			jwtSecret = GenerateSecretKey(48)
+		}
+
+		if err := DB.Model(&setting).Update("JWTSecret", jwtSecret).Error; err != nil {
+			mylog.Logger.Error("初始化 JWT 密钥失败", zap.Error(err))
+		} else {
+			mylog.Logger.Info("JWT 密钥初始化完成")
+		}
+	}
+
 	// 给APIKEY表设置默认值
 	var apikeyCount int64
 	// 检查APIKEY表是否为空，如果为空则插入默认值
@@ -199,9 +251,9 @@ func Start() {
 	if apikeyCount == 0 {
 		mylog.Logger.Info("APIKEY表为空，创建默认设置")
 		result := DB.Create(&ApiKey{
-			Tronscan:  "28b6e96a-4630-442e-8f2b-35f80c8b54d6",
-			Trongrid:  "0232af66-3f6f-42a3-bd90-f184b38fba27",
-			Etherscan: "UPCN5AHEA1383NW5DUYZ3REE8V38TSS94N",
+			Tronscan:  "",
+			Trongrid:  "",
+			Etherscan: "",
 		})
 		if result.Error != nil {
 			mylog.Logger.Error("APIKEY表创建默认设置失败", zap.Error(result.Error))
@@ -221,25 +273,40 @@ const (
 )
 
 var (
-	defaultuserusername = GenerateSecretKey(8)
-	Defaultuserpassword = GenerateSecretKey(8)
+	defaultuserusername = "admin"
+	Defaultuserpassword = "admin"
 )
 
 // 设置一个生成密钥的函数
 
 func GenerateSecretKey(length int) string {
-
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	var key bytes.Buffer
-	for i := 0; i < length; i++ {
-		key.WriteByte(chars[rand.Intn(len(chars))])
+	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+	if length <= 0 {
+		return ""
 	}
+
+	randomBytes := make([]byte, length)
+	if _, err := cryptorand.Read(randomBytes); err != nil {
+		mylog.Logger.Error("生成安全随机密钥失败", zap.Error(err))
+		return ""
+	}
+
+	var key bytes.Buffer
+	key.Grow(length)
+	for _, b := range randomBytes {
+		key.WriteByte(chars[int(b)%len(chars)])
+	}
+
 	return key.String()
 }
 
 func GetSetting() Setting {
 	var setting Setting
 	DB.First(&setting)
+	applySettingEnvOverrides(&setting)
+	if setting.JWTSecret == "" {
+		setting.JWTSecret = setting.SecretKey
+	}
 
 	/* if result.RowsAffected == 0 {
 		mylog.Logger.Info("系统设置不存在，创建默认设置")
@@ -270,6 +337,51 @@ func GetSetting() Setting {
 	return setting
 }
 
+func envString(key string, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func envInt(key string, fallback int) int {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func applySettingEnvOverrides(setting *Setting) {
+	if setting == nil {
+		return
+	}
+
+	if value := os.Getenv("UPAY_APP_URL"); value != "" {
+		setting.AppUrl = value
+	}
+	if value := os.Getenv("UPAY_HTTP_PORT"); value != "" {
+		setting.Httpport = envInt("UPAY_HTTP_PORT", setting.Httpport)
+	}
+	if value := os.Getenv("UPAY_REDIS_HOST"); value != "" {
+		setting.Redishost = value
+	}
+	if value := os.Getenv("UPAY_REDIS_PORT"); value != "" {
+		setting.Redisport = envInt("UPAY_REDIS_PORT", setting.Redisport)
+	}
+	if value := os.Getenv("UPAY_REDIS_PASSWORD"); value != "" {
+		setting.Redispasswd = value
+	}
+	if value := os.Getenv("UPAY_REDIS_DB"); value != "" {
+		setting.Redisdb = envInt("UPAY_REDIS_DB", setting.Redisdb)
+	}
+}
+
 func HashPassword(password string) (string, error) {
 	cost := 12 // 计算成本，值越大越安全但越耗时
 	hashedBytes, err := bcrypt.GenerateFromPassword([]byte(password), cost)
@@ -294,6 +406,23 @@ func GetWalletAddress(type_ string) []WalletAddress {
 	return walletAddress
 }
 
+func DisableWalletAddress(currency string, token string) bool {
+	if currency == "" || token == "" {
+		return false
+	}
+
+	result := DB.Model(&WalletAddress{}).
+		Where("currency = ? AND token = ? AND status = ?", currency, token, TokenStatusEnable).
+		Update("status", TokenStatusDisable)
+
+	if result.Error != nil {
+		mylog.Logger.Error("禁用钱包地址失败", zap.String("currency", currency), zap.String("token", token), zap.Error(result.Error))
+		return false
+	}
+
+	return result.RowsAffected > 0
+}
+
 func (n WalletAddress) String() string {
 	return fmt.Sprintf("%s:%v", n.Token, n.Rate)
 }
@@ -302,6 +431,50 @@ func GetOrderByOrderId(orderId string) Orders {
 	var order Orders
 	DB.Where("order_id = ?", orderId).Last(&order)
 	return order
+}
+
+func GetLatestOrderByTradeOrOrderID(identifier string) (Orders, error) {
+	var order Orders
+	result := DB.Where("trade_id = ?", identifier).Order("id DESC").Limit(1).Find(&order)
+	if result.Error != nil {
+		return order, result.Error
+	}
+	if result.RowsAffected > 0 {
+		return order, nil
+	}
+
+	result = DB.Where("order_id = ?", identifier).Order("id DESC").Limit(1).Find(&order)
+	if result.Error != nil {
+		return order, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return order, gorm.ErrRecordNotFound
+	}
+
+	return order, nil
+}
+
+func SyncExpiredOrders() error {
+	nowMillis := time.Now().UnixMilli()
+	return DB.Model(&Orders{}).
+		Where("status = ? AND expiration_time > 0 AND expiration_time <= ?", StatusWaitPay, nowMillis).
+		Update("status", StatusExpired).Error
+}
+
+func SyncOrderStatusByTradeID(tradeID string) (Orders, error) {
+	var order Orders
+	if err := DB.Where("trade_id = ?", tradeID).Last(&order).Error; err != nil {
+		return order, err
+	}
+
+	if order.Status == StatusWaitPay && order.ExpirationTime > 0 && order.ExpirationTime <= time.Now().UnixMilli() {
+		order.Status = StatusExpired
+		if err := DB.Model(&order).Update("status", StatusExpired).Error; err != nil {
+			return order, err
+		}
+	}
+
+	return order, nil
 }
 
 func GetApiKey() ApiKey {

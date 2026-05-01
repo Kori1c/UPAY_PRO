@@ -80,7 +80,7 @@ func GETHTTP(order sdb.Orders) (APIResponse, error) {
 	URL := apiURL + "?" + params.Encode()
 
 	// 请求的API地址：
-	mylog.Logger.Info("请求的API地址:", zap.String("URL", URL))
+	mylog.Logger.Info("请求的API地址:", zap.String("URL", mylog.RedactURL(URL)))
 
 	req, err := http.NewRequest("GET", URL, nil)
 	if err != nil {

@@ -1,7 +1,9 @@
 package mylog
 
 import (
+	"encoding/json"
 	"os"
+	"strings"
 
 	"github.com/natefinch/lumberjack"
 	"go.uber.org/zap"
@@ -48,4 +50,66 @@ func init() {
 	Logger = log_zap
 	// 确保 logger 在退出时进行同步
 
+}
+
+func MaskSensitive(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 4 {
+		return "********"
+	}
+	return "********" + value[len(value)-4:]
+}
+
+func RedactURL(raw string) string {
+	replacements := []string{"apikey=", "apiKey=", "key=", "token=", "signature=", "sign="}
+	redacted := raw
+	for _, marker := range replacements {
+		lowerRedacted := strings.ToLower(redacted)
+		lowerMarker := strings.ToLower(marker)
+		idx := strings.Index(lowerRedacted, lowerMarker)
+		for idx >= 0 {
+			start := idx + len(marker)
+			end := start
+			for end < len(redacted) && redacted[end] != '&' {
+				end++
+			}
+			redacted = redacted[:start] + "********" + redacted[end:]
+			lowerRedacted = strings.ToLower(redacted)
+			idx = strings.Index(lowerRedacted[start:], lowerMarker)
+			if idx >= 0 {
+				idx += start
+			}
+		}
+	}
+	return redacted
+}
+
+func RedactJSONBody(raw []byte, keys ...string) string {
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "[unparseable-json]"
+	}
+
+	sensitiveKeys := map[string]bool{}
+	for _, key := range keys {
+		sensitiveKeys[strings.ToLower(key)] = true
+	}
+	for key, value := range payload {
+		if sensitiveKeys[strings.ToLower(key)] {
+			if str, ok := value.(string); ok {
+				payload[key] = MaskSensitive(str)
+			} else {
+				payload[key] = "********"
+			}
+		}
+	}
+
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "[redaction-failed]"
+	}
+	return string(encoded)
 }

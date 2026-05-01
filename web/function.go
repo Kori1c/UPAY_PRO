@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -12,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"upay_pro/db/rdb"
 	"upay_pro/db/sdb"
@@ -35,15 +35,19 @@ type MyClaims struct {
 	jwt.RegisteredClaims        // 内嵌标准字段（如过期时间、签发者等）
 }
 
-var (
-	secret  = sdb.GenerateSecretKey(256)
-	sync_mu sync.Mutex
-)
+func jwtSecret() []byte {
+	setting := sdb.GetSetting()
+	secretKey := setting.JWTSecret
+	if secretKey == "" {
+		secretKey = setting.SecretKey
+	}
+	if secretKey == "" {
+		secretKey = "upay-jwt-fallback-secret"
+	}
+	return []byte(secretKey)
+}
 
-func GenerateToken() string {
-
-	// 1. 准备密钥（重要！实际使用要保密）
-	secretKey := []byte(secret)
+func GenerateToken() (string, error) {
 
 	// 2. 创建Claims（数据载体）
 	claims := MyClaims{
@@ -58,11 +62,11 @@ func GenerateToken() string {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	// 4. 生成签名字符串
-	signedToken, err := token.SignedString(secretKey)
+	signedToken, err := token.SignedString(jwtSecret())
 	if err != nil {
-		panic(err) // 实际应返回错误
+		return "", err
 	}
-	return signedToken
+	return signedToken, nil
 }
 
 func ParseToken(tokenString string) (*MyClaims, error) {
@@ -78,7 +82,7 @@ func ParseToken(tokenString string) (*MyClaims, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			return []byte(secret), nil
+			return jwtSecret(), nil
 		},
 		jwt.WithLeeway(5*time.Second), // 允许5秒时间误差
 	)
@@ -100,47 +104,75 @@ func ParseToken(tokenString string) (*MyClaims, error) {
 
 func JWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		abortUnauthorized := func() {
+			if strings.HasPrefix(c.Request.URL.Path, "/admin/api/") {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"code": -1,
+					"msg":  "未登录",
+				})
+			} else {
+				c.Redirect(http.StatusFound, "/login")
+			}
+
+			c.Abort()
+		}
+
 		// 1. 获取cookie
 		cookie, err := c.Cookie("token")
 		if err != nil || cookie == "" {
-			c.Redirect(302, "/login")
-			/* c.JSON(http.StatusOK, gin.H{
-				"code": -1,
-				"msg":  "未登录",
-			}) */
-
-			c.Abort()
+			mylog.Logger.Warn("鉴权失败：未获取到 token cookie", zap.Error(err))
+			abortUnauthorized()
 			return
 
 		}
 		// 验证cookie
 		claims, err := ParseToken(cookie)
 		if err != nil {
-			c.Redirect(302, "/login")
-			/* 	c.JSON(http.StatusOK, gin.H{
-				"code": -1,
-				"msg":  "未登录",
-			}) */
-
-			c.Abort()
+			mylog.Logger.Warn("鉴权失败：token 解析失败", zap.Error(err))
+			abortUnauthorized()
 			return
 
 		}
 		// 2. 验证用户，是否和数据库里一致
 		if claims.UserName != sdb.GetUserByUsername() {
-			c.Redirect(302, "/login")
-			/* 	c.JSON(http.StatusOK, gin.H{
-				"code": -1,
-				"msg":  "未登录",
-			}) */
-
-			c.Abort()
+			mylog.Logger.Warn("鉴权失败：token 用户与当前管理员不一致", zap.String("token_user", claims.UserName), zap.String("db_user", sdb.GetUserByUsername()))
+			abortUnauthorized()
 			return
 		}
 		// 3. 身份验证通过
 		c.Next()
 
 	}
+}
+
+func acquireOrderLock(orderID string, ttl time.Duration) (func(), error) {
+	if rdb.RDB == nil {
+		mylog.Logger.Warn("Redis 未就绪，跳过订单级并发锁", zap.String("order_id", orderID))
+		return func() {}, nil
+	}
+
+	orderLockKey := fmt.Sprintf("order_lock:%s", orderID)
+	orderLockAcquired, err := rdb.RDB.SetNX(context.Background(), orderLockKey, "1", ttl).Result()
+	if err != nil {
+		return nil, err
+	}
+	if !orderLockAcquired {
+		return nil, errors.New("order lock busy")
+	}
+
+	return func() {
+		if err := rdb.RDB.Del(context.Background(), orderLockKey).Err(); err != nil {
+			mylog.Logger.Error("释放订单级并发锁失败", zap.Error(err))
+		}
+	}, nil
+}
+
+func requireRedisReadyForOrderFlow() error {
+	if rdb.RDB == nil {
+		return errors.New("redis unavailable")
+	}
+
+	return nil
 }
 
 const ( // 定义常量
@@ -163,7 +195,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		// 打印原始请求体
-		mylog.Logger.Info("原始请求体", zap.String("body", string(body)))
+		mylog.Logger.Info("原始请求体", zap.String("body", mylog.RedactJSONBody(body, "signature")))
 
 		// 重新设置请求体，以便后续绑定使用
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
@@ -243,17 +275,17 @@ func AuthMiddleware() gin.HandlerFunc {
 		} */
 		// queryString = strings.TrimRight(queryString, "&") + config.GetApiAuthToken()
 
-		mylog.Logger.Info("拼接的查询字符串", zap.String("queryString", signatureString))
+		mylog.Logger.Info("签名参数已拼接", zap.Int("param_count", len(params)))
 
 		/* 		queryString := fmt.Sprintf("amount=%f&notify_url=%s&order_id=%s&redirect_url=%s%s",
 		requestParams.Amount, requestParams.NotifyURL, requestParams.OrderID, requestParams.RedirectURL, config.GetApiAuthToken())
 		*/
 		// 打印一下传入的签名
-		mylog.Logger.Info("传入的签名", zap.String("signature", requestParams.Signature))
+		mylog.Logger.Info("传入的签名", zap.String("signature", mylog.MaskSensitive(requestParams.Signature)))
 		// 对拼接的字符串进行md5加密，并验证如果传入的签名和计算的签名一致，则继续执行下一个中间件或者处理函数
 
 		Signature := fmt.Sprintf("%x", md5.Sum([]byte(signatureString)))
-		mylog.Logger.Info("计算的签名", zap.String("Signature", Signature))
+		mylog.Logger.Info("计算的签名", zap.String("Signature", mylog.MaskSensitive(Signature)))
 		// 验证传入的签名和计算的签名是否一致
 		if requestParams.Signature != Signature {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "签名验证失败"})
@@ -269,16 +301,29 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 func CreateTransaction(c *gin.Context) {
-	// 创建锁
-	sync_mu.Lock()
-	// 本函数最后释放锁
-	defer sync_mu.Unlock()
-
 	var requestParams dto.RequestParams
 	if err := c.ShouldBindBodyWith(&requestParams, binding.JSON); err != nil {
 		c.JSON(400, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
+
+	if err := requireRedisReadyForOrderFlow(); err != nil {
+		mylog.Logger.Warn("创建订单失败：Redis 未就绪", zap.String("order_id", requestParams.OrderID))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1, "message": "系统缓存未就绪，暂时无法创建订单"})
+		return
+	}
+
+	releaseOrderLock, err := acquireOrderLock(requestParams.OrderID, 5*time.Second)
+	if err != nil {
+		if err.Error() == "order lock busy" {
+			c.JSON(http.StatusTooManyRequests, gin.H{"code": 1, "message": "订单正在处理中，请稍后重试"})
+			return
+		}
+		mylog.Logger.Error("获取订单级并发锁失败", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "系统繁忙，请稍后重试"})
+		return
+	}
+	defer releaseOrderLock()
 
 	// 根据传入的商店订单号查询到对应记录
 	order1 := sdb.GetOrderByOrderId(requestParams.OrderID)
@@ -297,6 +342,7 @@ func CreateTransaction(c *gin.Context) {
 		err := rdb.RDB.Set(context.Background(), ActualAmount_Token, order1.ActualAmount, sdb.GetSetting().ExpirationDate).Err()
 		if err != nil {
 			mylog.Logger.Error("更新Redis中的钱包过期时间失败", zap.Error(err))
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1, "message": "系统缓存未就绪，暂时无法继续支付"})
 			return
 		}
 		//先获取一下之前这个订单的任务ID
@@ -305,31 +351,20 @@ func CreateTransaction(c *gin.Context) {
 
 		re := sdb.DB.Where("TradeId = ?", order1.TradeId).Last(&task)
 		if re.Error != nil {
-			mylog.Logger.Info("获取任务ID记录失败:", zap.Any("error", re.Error))
-			return
-		}
-		if re.RowsAffected == 0 {
-			mylog.Logger.Info("获取任务ID记录失败，订单不存在", zap.Any("error", re.Error))
-			return
+			mylog.Logger.Warn("获取旧任务记录失败，继续返回现有支付订单", zap.Any("error", re.Error), zap.String("trade_id", order1.TradeId))
 		}
 
-		//使用队列管理器删除任务
+		if re.Error == nil && re.RowsAffected > 0 {
+			// 使用队列管理器删除任务
+			if err = mq.StopTask(task.TaskID); err != nil {
+				mylog.Logger.Warn("删除旧队列任务失败，继续补充新过期任务", zap.Error(err), zap.String("trade_id", order1.TradeId))
+			}
 
-		err = mq.StopTask(task.TaskID)
-		if err != nil {
-			mylog.Logger.Error("删除队列任务失败", zap.Error(err))
-			return
-		}
-		// 删除这条数据库库记录
-
-		re = sdb.DB.Delete(&task, task.ID)
-		if re.Error != nil {
-			mylog.Logger.Error("删除数据库任务记录失败", zap.Error(err))
-			return
-		}
-		if re.RowsAffected == 0 {
-			mylog.Logger.Error("删除数据库任务记录失败", zap.Error(err))
-			return
+			// 删除旧数据库任务记录
+			re = sdb.DB.Delete(&task, task.ID)
+			if re.Error != nil {
+				mylog.Logger.Warn("删除旧任务映射记录失败，继续返回现有支付订单", zap.Error(re.Error), zap.String("trade_id", order1.TradeId))
+			}
 		}
 
 		// 重新加入新的任务
@@ -369,6 +404,7 @@ func CreateTransaction(c *gin.Context) {
 	}
 	var Token string
 	var ActualAmount float64
+	var reservedAmountKey string
 	// 默认值为false
 	var found = false
 	// 创建 RoundRobin 负载均衡器
@@ -422,22 +458,26 @@ func CreateTransaction(c *gin.Context) {
 
 		ActualAmount_Token := fmt.Sprintf("%s_%f", Token, ActualAmount)
 
-		// 检查Redis中是否有该金额
-		currentAmount := getRedisAmount(ActualAmount_Token)
+		// 使用 Redis SETNX 原子占位，避免 “先查再设” 竞争条件
+		reserved, reserveErr := rdb.RDB.SetNX(
+			context.Background(),
+			ActualAmount_Token,
+			ActualAmount,
+			sdb.GetSetting().ExpirationDate,
+		).Result()
+		if reserveErr != nil {
+			mylog.Logger.Error("预占 Redis 金额失败", zap.Error(reserveErr))
+			continue
+		}
 
-		// 如果钱包地址没有被占用，getRedisAmount 返回 false
-		if currentAmount == false {
-			err := rdb.RDB.Set(context.Background(), ActualAmount_Token, ActualAmount, sdb.GetSetting().ExpirationDate).Err()
-			if err != nil {
-				mylog.Logger.Error("设置 Redis 中金额时，操作过程发生错误", zap.Any("err", err))
-				continue
-			}
+		if reserved {
+			reservedAmountKey = ActualAmount_Token
 			found = true
 			break
-		} else {
-			// 如果占用，增加该钱包的尝试次数
-			walletAttempts[Token]++
 		}
+
+		// 如果占用，增加该钱包的尝试次数
+		walletAttempts[Token]++
 	}
 
 	// 检查是否找到合适的配置
@@ -456,14 +496,21 @@ func CreateTransaction(c *gin.Context) {
 		Token:        Token,
 		Status:       sdb.StatusWaitPay,
 
-		NotifyUrl:      requestParams.NotifyURL,
-		RedirectUrl:    requestParams.RedirectURL,
-		StartTime:      time.Now().UnixMilli(),
-		ExpirationTime: time.Now().Add(sdb.GetSetting().ExpirationDate).UnixMilli(),
+		NotifyUrl:       requestParams.NotifyURL,
+		RedirectUrl:     requestParams.RedirectURL,
+		CallbackNum:     0,
+		CallBackConfirm: sdb.CallBackConfirmNo,
+		StartTime:       time.Now().UnixMilli(),
+		ExpirationTime:  time.Now().Add(sdb.GetSetting().ExpirationDate).UnixMilli(),
 	}
 
 	result := sdb.DB.Create(&order)
 	if result.Error != nil {
+		if reservedAmountKey != "" {
+			if err := rdb.RDB.Del(context.Background(), reservedAmountKey).Err(); err != nil {
+				mylog.Logger.Error("创建订单失败后释放 Redis 金额占位失败", zap.Error(err))
+			}
+		}
 		c.JSON(500, gin.H{"code": 1, "message": "创建订单失败1"})
 		mylog.Logger.Error("创建订单失败", zap.Any("err", result.Error))
 		return
@@ -487,8 +534,8 @@ func CreateTransaction(c *gin.Context) {
 		},
 	}
 	c.JSON(http.StatusOK, orderInfo)
-
 }
+
 func generateOrderID() string {
 	// 获取当前时间，格式化为年月日时分秒
 	timestamp := time.Now().Format("20060102150405") // 格式化为类似 20231010123456 的形式
@@ -507,11 +554,13 @@ func CheckoutCounter(c *gin.Context) {
 	// 获取请求参数
 	trade_id := c.Param("trade_id")
 
-	// 获取订单信息
-	order := sdb.Orders{}
-	err := sdb.DB.Find(&order, "trade_id=? and status=?", trade_id, sdb.StatusWaitPay).Error
+	order, err := sdb.SyncOrderStatusByTradeID(trade_id)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "获取订单信息失败"})
+		return
+	}
+	if order.Status != sdb.StatusWaitPay {
+		c.JSON(400, gin.H{"error": "订单状态不可支付"})
 		return
 	}
 
@@ -563,9 +612,7 @@ func CheckOrderStatus(c *gin.Context) {
 	// 依据传入的路径参数【交易ID】，查询订单状态
 	trade_id := c.Param("trade_id")
 
-	// 查询订单状态
-	order := sdb.Orders{}
-	err := sdb.DB.Find(&order, "trade_id=?", trade_id).Error
+	order, err := sdb.SyncOrderStatusByTradeID(trade_id)
 	if err != nil {
 		c.JSON(500, gin.H{"message": "获取订单信息失败"})
 		return
@@ -584,29 +631,3 @@ func CheckOrderStatus(c *gin.Context) {
 func (n Node) String() string {
 	return n.Address
 } */
-
-// 获取 Redis 中金额
-func getRedisAmount(token string) bool {
-	// 通过 Exists 方法检查键是否存在
-	// result := rdb.RDB.Get(context.Background(), token).Val() 该方法不适合生成环境使用
-	exists, err := rdb.RDB.Exists(context.Background(), token).Result()
-
-	if err != nil {
-		mylog.Logger.Error("获取 Redis 中钱包地址的键值是否存时，操作过程发生错误", zap.Any("err", err))
-		return false
-	}
-	if exists == 1 {
-		// 键存在
-		return true
-
-	}
-	// 键不存在
-	return false
-
-	/* 返回值具体情况
-	   情况 exists 值 err 值 说明
-	   key 存在 1 nil 表示 key 存在
-	   key 不存在 0 nil 表示 key 不存在
-	   发生错误 0 非nil 如连接问题、命令错误等 */
-
-}

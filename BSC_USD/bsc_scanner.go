@@ -2,12 +2,12 @@ package BSC_USD
 
 import (
 	"fmt"
-	"log"
 	"math"
 	"upay_pro/db/sdb"
 	"upay_pro/mylog"
 
 	"github.com/wangegou/bsc-usdt-scanner/scanner"
+	"go.uber.org/zap"
 )
 
 func Start_scan(order sdb.Orders) bool {
@@ -20,7 +20,8 @@ func Start_scan(order sdb.Orders) bool {
 
 	records, err := scanner.StartScan(order.Token, "USDT")
 	if err != nil {
-		log.Fatalf("扫描失败: %v", err)
+		mylog.Logger.Error("BSC-USD 扫描失败", zap.Error(err))
+		return false
 	}
 
 	mylog.Logger.Info(fmt.Sprintf("扫描完成! 发现 %d 笔入账:\n", len(records)))

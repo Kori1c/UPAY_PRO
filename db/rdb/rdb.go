@@ -3,6 +3,7 @@ package rdb
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 	"upay_pro/db/sdb"
 	"upay_pro/mylog"
@@ -12,10 +13,16 @@ import (
 )
 
 var RDB *redis.Client
+var mu sync.Mutex
 
 func init() {
-	// 创建 Redis 客户端
-	rdb := redis.NewClient(&redis.Options{
+	if err := Reload(); err != nil {
+		mylog.Logger.Warn("redis 初始化失败，系统将以受限模式启动", zap.Error(err))
+	}
+}
+
+func newClient() *redis.Client {
+	return redis.NewClient(&redis.Options{
 		// 基本连接配置
 		Addr:     fmt.Sprintf("%s:%d", sdb.GetSetting().Redishost, sdb.GetSetting().Redisport), // Redis 地址
 		Password: sdb.GetSetting().Redispasswd,                                                 // Redis 密码
@@ -39,26 +46,28 @@ func init() {
 			return nil
 		},
 	})
+}
+
+func Reload() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	rdb := newClient()
 	ctx := context.Background()
-	RDB = rdb
-	// defer rdb.Close()  在其他调用时最后关闭
-	// 测试连接
 	_, err := rdb.Ping(ctx).Result()
 	if err != nil {
-		// redis 连接失败写入日志
-		mylog.Logger.Panic("redis 链接失败", zap.Error(err))
-
+		_ = rdb.Close()
+		return err
 	}
 
-	// 测试redis是否连接成功 写入日志
+	old := RDB
+	RDB = rdb
+	if old != nil {
+		_ = old.Close()
+	}
+
 	mylog.Logger.Info("redis 连接成功")
-
-	/* 	// 测试访问不存在的键
-	   	_, err = rdb.Get(ctx, "520").Result()
-	   	if err != nil {
-	   		log.Logger.Info("redis 访问不存在的键")
-	   	} */
-
+	return nil
 }
 
 // Close 优雅关闭 Redis 连接

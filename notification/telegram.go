@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"upay_pro/db/sdb"
 	"upay_pro/mylog"
+
+	"go.uber.org/zap"
 )
 
 // TelegramMessage 电报消息结构体
@@ -52,18 +54,18 @@ func sendTelegramNotification(botToken, chatID, message string) error {
 }
 
 // StartTelegram 启动电报通知服务
-func StartTelegram(order sdb.Orders) {
+func StartTelegram(order sdb.Orders) error {
 	setting := sdb.GetSetting()
 
 	// 检查电报机器人配置
 	if setting.Tgbotkey == "" {
 		mylog.Logger.Info("Tgbotkey为空，不能发送电报通知")
-		return
+		return nil
 	}
 
 	if setting.Tgchatid == "" {
 		mylog.Logger.Info("Tgchatid为空，不能发送电报通知")
-		return
+		return nil
 	}
 
 	// 将数据库中的数字翻译为自然语言
@@ -106,8 +108,10 @@ func StartTelegram(order sdb.Orders) {
 	// 发送电报通知
 	err := sendTelegramNotification(setting.Tgbotkey, setting.Tgchatid, message)
 	if err != nil {
-		mylog.Logger.Error(fmt.Sprintf("发送电报通知失败: %v", err))
-	} else {
-		mylog.Logger.Info("电报通知发送成功！")
+		mylog.Logger.Error("发送电报通知失败", zap.Error(err))
+		return err
 	}
+
+	mylog.Logger.Info("电报通知发送成功！")
+	return nil
 }

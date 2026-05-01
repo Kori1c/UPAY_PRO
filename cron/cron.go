@@ -45,6 +45,28 @@ var httpClient = &http.Client{
 	},
 }
 
+func dispatchNotificationWithRetry(name string, order sdb.Orders, send func(sdb.Orders) error) {
+	retryDelays := []time.Duration{
+		0,
+		1 * time.Minute,
+		3 * time.Minute,
+		5 * time.Minute,
+	}
+
+	for attempt, delay := range retryDelays {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+
+		err := send(order)
+		if err == nil {
+			return
+		}
+
+		mylog.Logger.Error("异步通知发送失败", zap.String("channel", name), zap.Int("attempt", attempt+1), zap.Error(err))
+	}
+}
+
 // 定义一个任务结构体 UsdtRateJob
 // 负责定期检查未支付订单的支付状态，并在支付成功后更新订单状态、发送通知和回调
 type UsdtCheckJob struct{}
@@ -243,8 +265,8 @@ func Start() {
 	// 如果上一次任务还在运行，新的任务执行时间到了，则跳过本次执行
 	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
 
-	// 每 2 秒执行一次 UsdtRateJob 任务
-	_, err := c.AddJob("@every 2s", UsdtCheckJob{})
+	// 每 10 秒执行一次未支付订单检测，减少空转轮询压力
+	_, err := c.AddJob("@every 10s", UsdtCheckJob{})
 	if err != nil {
 
 		mylog.Logger.Info("未支付订单检测任务添加失败")
@@ -277,7 +299,7 @@ func sendAsyncPost(url string, notification dto.PaymentNotification_request) (st
 		return "", err
 	}
 
-	mylog.Logger.Info("发送异步请求，参数序列化为JSON:", zap.String("url", url), zap.String("body", string(requestBody)))
+	mylog.Logger.Info("发送异步请求，参数序列化为JSON:", zap.String("url", url), zap.String("body", mylog.RedactJSONBody(requestBody, "signature")))
 
 	// 创建 POST 请求
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
@@ -297,14 +319,15 @@ func sendAsyncPost(url string, notification dto.PaymentNotification_request) (st
 
 	// 读取响应
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		fmt.Println("发送成功，服务器返回 200 OK")
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		fmt.Println("发送成功，服务器返回 2xx")
 
 		// 读取服务器响应
 		buf := new(bytes.Buffer)
 		_, _ = buf.ReadFrom(resp.Body)
+		body := strings.ToLower(strings.TrimSpace(buf.String()))
 
-		if buf.String() == "ok" || buf.String() == "success" {
+		if body == "ok" || body == "success" {
 			fmt.Println("异步回调发送成功，服务器返回字符串 'ok' 或 'success")
 			return "ok", nil
 
@@ -359,16 +382,33 @@ func generateSignature(data dto.PaymentNotification_request) string {
 	// 使用 strings.Join 连接排序后的参数
 	signatureString := strings.Join(filteredParams, "&") + sdb.GetSetting().SecretKey
 
-	// 打印拼接的参数
-	mylog.Logger.Info("异步回调的拼接的参数", zap.Any("signatureString", signatureString))
+	mylog.Logger.Info("异步回调签名参数已拼接", zap.Int("param_count", len(filteredParams)))
 
 	// 计算 MD5 哈希值
 	hash := md5.Sum([]byte(signatureString))
 	return hex.EncodeToString(hash[:]) // 转为十六进制字符串
 }
 
+func safePaymentNotificationLog(data dto.PaymentNotification_request) map[string]interface{} {
+	return map[string]interface{}{
+		"trade_id":             data.TradeID,
+		"order_id":             data.OrderID,
+		"amount":               data.Amount,
+		"actual_amount":        data.ActualAmount,
+		"token":                data.Token,
+		"block_transaction_id": data.BlockTransactionID,
+		"signature":            mylog.MaskSensitive(data.Signature),
+		"status":               data.Status,
+	}
+}
+
 // 解锁钱包地址和金额
 func unlockWalletAddressAndAmount(v sdb.Orders) {
+	if rdb.RDB == nil {
+		mylog.Logger.Warn("Redis 未就绪，跳过钱包地址和金额解锁", zap.String("trade_id", v.TradeId))
+		return
+	}
+
 	// 解锁钱包地址和金额
 	address_amount := fmt.Sprintf("%s_%f", v.Token, v.ActualAmount)
 	cx := context.Background()
@@ -417,7 +457,7 @@ func ProcessCallback(v sdb.Orders) {
 	signature := generateSignature(paymentNotification)
 	paymentNotification.Signature = signature
 	// 异步回调最大次数5次
-	mylog.Logger.Info("异步回调的参数", zap.Any("参数", paymentNotification))
+	mylog.Logger.Info("异步回调的参数", zap.Any("参数", safePaymentNotificationLog(paymentNotification)))
 	// 使用事务简化回调确认
 
 	for i := 0; i < 5; i++ {
@@ -432,9 +472,9 @@ func ProcessCallback(v sdb.Orders) {
 			} else {
 				mylog.Logger.Info("已经确认订单支付成功，并把回调CallBackConfirm设置为1")
 			}
-			// 异步回调成功后发送telegram、Bark通知|| 异步进程发送通知
-			go notification.Bark_Start(v1)
-			go notification.StartTelegram(v1)
+			// 异步回调成功后发送 telegram、Bark 通知；失败时按 1/3/5 分钟简单重试
+			go dispatchNotificationWithRetry("bark", v1, notification.Bark_Start)
+			go dispatchNotificationWithRetry("telegram", v1, notification.StartTelegram)
 			break
 		}
 		if err != nil {
@@ -446,7 +486,7 @@ func ProcessCallback(v sdb.Orders) {
 			// if err := sdb.DB.Model(&v).UpdateColumn("callback_num", gorm.Expr("callback_num + ?", 1)).Error; err != nil {
 			// 	mylog.Logger.Info("更新回调失败次数失败", zap.Any("err", err))
 			// }
-			if err := sdb.DB.Model(v).UpdateColumn("callback_num", gorm.Expr("callback_num + ?", 1)).Error; err != nil {
+			if err := sdb.DB.Model(&v1).UpdateColumn("callback_num", gorm.Expr("callback_num + ?", 1)).Error; err != nil {
 				mylog.Logger.Info("更新回调失败次数失败", zap.Any("err", err))
 			}
 			// 延迟5秒

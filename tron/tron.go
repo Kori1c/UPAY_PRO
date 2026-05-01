@@ -5,6 +5,7 @@ import (
 	"fmt"           // 导入 fmt 包用于格式化输出
 	"io"            // 导入 io 包用于读取响应体
 	"strings"
+	"sync"
 	"time"
 
 	// 导入 log 包用于记录日志
@@ -70,8 +71,41 @@ type TransferDetails struct {
 	FinalResult   string
 }
 
+var invalidTronAddressWarnings sync.Map
+
+func isLikelyTronAddress(address string) bool {
+	return len(address) == 34 && strings.HasPrefix(address, "T")
+}
+
+func warnInvalidTronAddressOnce(source string, order sdb.Orders) {
+	cacheKey := fmt.Sprintf("%s:%s", source, order.Token)
+	if _, loaded := invalidTronAddressWarnings.LoadOrStore(cacheKey, struct{}{}); loaded {
+		return
+	}
+
+	mylog.Logger.Warn("跳过 TRON 扫链：钱包地址格式无效",
+		zap.String("source", source),
+		zap.String("order_id", order.TradeId),
+		zap.String("token", order.Token),
+	)
+}
+
+func disableInvalidWallet(order sdb.Orders) {
+	if sdb.DisableWalletAddress(order.Type, order.Token) {
+		mylog.Logger.Warn("已自动停用无效钱包地址",
+			zap.String("currency", order.Type),
+			zap.String("token", order.Token),
+		)
+	}
+}
+
 // 传入钱包地址
 func GetTransactions(order sdb.Orders) bool {
+	if !isLikelyTronAddress(order.Token) {
+		disableInvalidWallet(order)
+		warnInvalidTronAddressOnce("tronscan", order)
+		return false
+	}
 
 	/* 	// 获取当前时间戳（毫秒）
 	   	endTime := carbon.Now().TimestampMilli()

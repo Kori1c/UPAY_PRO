@@ -3,6 +3,7 @@ package mq
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 	"upay_pro/db/sdb"
 	"upay_pro/mylog"
@@ -19,26 +20,59 @@ var Mux *asynq.ServeMux
 
 // 任务管理器
 var Inspector *asynq.Inspector
+var Server *asynq.Server
+var mu sync.Mutex
 
 func init() {
-	// 获取redis地址
-	addr := fmt.Sprintf("%s:%d", sdb.GetSetting().Redishost, sdb.GetSetting().Redisport)
-	// 初始客户端
-	client := asynq.NewClient(asynq.RedisClientOpt{
-		Addr:     addr,
-		Password: sdb.GetSetting().Redispasswd,
-		DB:       sdb.GetSetting().Redisdb,
-	})
-	Client = client
-	// 初始化任务管理器
-	Inspector = asynq.NewInspector(asynq.RedisClientOpt{
-		Addr:     addr,
-		Password: sdb.GetSetting().Redispasswd,
-		DB:       sdb.GetSetting().Redisdb,
-	})
-	// 启动异步任务服务器
-	go async_server_run()
+	if err := Reload(); err != nil {
+		mylog.Logger.Warn("mq 初始化失败，系统将跳过异步队列能力", zap.Error(err))
+	}
+}
 
+func redisOpt() asynq.RedisClientOpt {
+	return asynq.RedisClientOpt{
+		Addr:     fmt.Sprintf("%s:%d", sdb.GetSetting().Redishost, sdb.GetSetting().Redisport),
+		Password: sdb.GetSetting().Redispasswd,
+		DB:       sdb.GetSetting().Redisdb,
+	}
+}
+
+func Reload() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	opt := redisOpt()
+	client := asynq.NewClient(opt)
+	inspector := asynq.NewInspector(opt)
+	server := asynq.NewServer(opt, asynq.Config{Concurrency: 10})
+
+	if err := server.Ping(); err != nil {
+		_ = client.Close()
+		_ = inspector.Close()
+		return err
+	}
+
+	oldClient := Client
+	oldInspector := Inspector
+	oldServer := Server
+
+	Client = client
+	Inspector = inspector
+	Server = server
+
+	if oldServer != nil {
+		oldServer.Shutdown()
+	}
+	if oldClient != nil {
+		_ = oldClient.Close()
+	}
+	if oldInspector != nil {
+		_ = oldInspector.Close()
+	}
+
+	go asyncServerRun(server)
+	mylog.Logger.Info("mq redis 连接已重载")
+	return nil
 }
 
 // QueueOrderExpiration 订单过期任务的队列名称
@@ -46,6 +80,11 @@ const QueueOrderExpiration = "order:expiration"
 
 // TaskOrderExpiration 创建任务和任务加入对列
 func TaskOrderExpiration(payload string, expirationDuration time.Duration) {
+	if Client == nil {
+		mylog.Logger.Warn("mq client 未初始化，跳过订单过期任务", zap.String("trade_id", payload))
+		return
+	}
+
 	task := asynq.NewTask(QueueOrderExpiration, []byte(payload)) // 转换为字节切片
 	// 将任务加入队列
 	info, err := Client.Enqueue(task, asynq.ProcessIn(expirationDuration))
@@ -64,17 +103,10 @@ func TaskOrderExpiration(payload string, expirationDuration time.Duration) {
 }
 
 // 队列服务端
-func async_server_run() {
+func asyncServerRun(server *asynq.Server) {
 	Mux = asynq.NewServeMux()
 	// 注册处理函数，根据任务名称，调用不同的处理函数
 	Mux.HandleFunc(QueueOrderExpiration, handleCheckStatusCodeTask)
-	// 获取redis地址
-	addr := fmt.Sprintf("%s:%d", sdb.GetSetting().Redishost, sdb.GetSetting().Redisport)
-	server := asynq.NewServer(asynq.RedisClientOpt{
-		Addr:     addr,
-		Password: sdb.GetSetting().Redispasswd,
-		DB:       sdb.GetSetting().Redisdb,
-	}, asynq.Config{Concurrency: 10})
 	if err := server.Run(Mux); err != nil {
 		mylog.Logger.Info("Error starting server:", zap.Any("err", err))
 	}
@@ -115,6 +147,9 @@ func handleCheckStatusCodeTask(ctx context.Context, t *asynq.Task) error {
 
 // 终止任务
 func StopTask(taskID string) error {
+	if Inspector == nil {
+		return fmt.Errorf("mq inspector 未初始化")
+	}
 	// 从队列中删除任务
 	err := Inspector.DeleteTask("default", taskID)
 	if err != nil {

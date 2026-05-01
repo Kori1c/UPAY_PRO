@@ -16,11 +16,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"go.uber.org/zap"
+	"upay_pro/db/rdb"
+	"upay_pro/mq"
 )
 
 type User struct {
 	UserName string `json:"username" form:"username" validate:"required,min=5,max=12,alphanum"`
-	PassWord string `json:"password" form:"password" validate:"required,min=6,max=18,alphanum"`
+	PassWord string `json:"password" form:"password" validate:"required,min=5,max=18,alphanum"`
 }
 
 func Start() {
@@ -42,92 +44,53 @@ func Start() {
 
 	r.Static("/css", "./static/css")
 	r.Static("/js", "./static/js")
-	// 首页路由
+	r.Static("/assets", "./static/admin_spa/assets")
+	registerHealthRoutes(r)
+
+	// 首页路由：默认进入现代化管理后台
 	r.GET("/", func(c *gin.Context) {
-		c.HTML(200, "index.html", gin.H{})
+		c.File("./static/admin_spa/index.html")
 	})
-	// 登录路由组
-	{
-
-		r.GET("/login", func(c *gin.Context) {
-			c.Header("HX-Redirect", "/login")
-			c.HTML(200, "login.html", gin.H{})
-		})
-
-		r.POST("/login", func(c *gin.Context) {
-			// 创建一个用户结构体
-			var user User
-			// 绑定请求体
-			err := c.ShouldBind(&user)
-			if err != nil {
-				c.JSON(400, gin.H{
-					"message": "参数错误",
-				})
-				return
-			}
-			// 验证用户结构体是否符合要求
-			err = validate.Struct(user)
-			if err != nil {
-				c.JSON(400, gin.H{
-					"message": err.Error(),
-				})
-				return
-			}
-			// 验证用户名密码和数据库是否一致
-			var userDB sdb.User
-			err = sdb.DB.Where("UserName = ?", user.UserName).First(&userDB).Error
-			if err != nil {
-				c.JSON(400, gin.H{
-					"message": "用户名或密码错误",
-				})
-				return
-			}
-			if sdb.VerifyPassword(user.PassWord, userDB.PassWord) {
-				// 重定向到后台页面
-				// c.Redirect(302, "/admin/")
-				c.Header("HX-Redirect", "/admin/")
-				// 生成token，并设置到cookie中
-				token := GenerateToken()
-				// cookie 设置选项 - 使用空字符串让浏览器自动处理域名
-				c.SetCookie("token", token, 3600*24, "/", "", false, true)
-
-			} else {
-				c.JSON(400, gin.H{
-					"message": "用户名或密码错误",
-				})
-			}
-
-		})
-	}
+	registerPublicAuthRoutes(r, validate)
 	// 后台路由组
 	{
 		admin := r.Group("/admin")
-		admin.Use(JWTAuthMiddleware())
+		admin.Use(JWTAuthMiddleware(), AdminOriginMiddleware())
 
 		admin.GET("/", func(c *gin.Context) {
-			c.HTML(200, "admin.html", gin.H{})
+			c.File("./static/admin_spa/index.html")
 		})
 
-		// 用户管理API
-		admin.GET("/api/users", func(c *gin.Context) {
-			var users []sdb.User
-			result := sdb.DB.Find(&users)
+		// 当前管理员账号信息
+		admin.GET("/api/account", func(c *gin.Context) {
+			var user sdb.User
+			result := sdb.DB.Where("deleted_at IS NULL").Order("id ASC").First(&user)
 			if result.Error != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{
 					"code": -1,
-					"msg":  "获取用户列表失败",
+					"msg":  "获取账号信息失败",
 				})
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{
 				"code": 0,
 				"msg":  "success",
-				"data": users,
+				"data": gin.H{
+					"id":       user.ID,
+					"username": user.UserName,
+				},
 			})
 		})
 
+		registerPasskeyAdminRoutes(admin)
+		registerOperationsRoutes(admin)
+
 		// 订单管理API
 		admin.GET("/api/orders", func(c *gin.Context) {
+			if err := sdb.SyncExpiredOrders(); err != nil {
+				mylog.Logger.Error("同步过期订单状态失败", zap.Error(err))
+			}
+
 			// 获取分页参数
 			page := 1
 			limit := 10
@@ -144,6 +107,8 @@ func Start() {
 
 			// 获取搜索参数
 			search := c.Query("search")
+			// 获取状态过滤参数
+			statusFilter := c.Query("status")
 
 			// 计算偏移量
 			offset := (page - 1) * limit
@@ -153,6 +118,12 @@ func Start() {
 			if search != "" {
 				// 搜索订单号(TradeId)或商城订单号(OrderId)
 				query = query.Where("trade_id LIKE ? OR order_id LIKE ?", "%"+search+"%", "%"+search+"%")
+			}
+			// 状态过滤
+			if statusFilter != "" {
+				if statusInt, err := strconv.Atoi(statusFilter); err == nil {
+					query = query.Where("status = ?", statusInt)
+				}
 			}
 
 			// 获取总数
@@ -201,30 +172,68 @@ func Start() {
 
 		// 统计数据API
 		admin.GET("/api/stats", func(c *gin.Context) {
+			if err := sdb.SyncExpiredOrders(); err != nil {
+				mylog.Logger.Error("同步统计过期订单状态失败", zap.Error(err))
+			}
+
 			var userCount int64
 			var successOrderCount int64
+			var pendingOrderCount int64
 			var walletCount int64
+			var todayAmount float64
+			var yesterdayAmount float64
+			var totalAmount float64
+			var todayOrderCount int64
+			var currentMonthSuccessOrderCount int64
 
 			sdb.DB.Model(&sdb.User{}).Count(&userCount)
 			sdb.DB.Model(&sdb.Orders{}).Where("status = ?", sdb.StatusPaySuccess).Count(&successOrderCount)
+			sdb.DB.Model(&sdb.Orders{}).Where("status = ?", sdb.StatusWaitPay).Count(&pendingOrderCount)
 			sdb.DB.Model(&sdb.WalletAddress{}).Count(&walletCount)
+
+			// 时间点计算
+			now := time.Now()
+			todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			yesterdayStart := todayStart.AddDate(0, 0, -1)
+			currentMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+
+			// 今日成功金额
+			sdb.DB.Model(&sdb.Orders{}).Where("status = ? AND created_at >= ?", sdb.StatusPaySuccess, todayStart).Select("COALESCE(SUM(amount), 0)").Scan(&todayAmount)
+
+			// 昨日成功金额
+			sdb.DB.Model(&sdb.Orders{}).Where("status = ? AND created_at >= ? AND created_at < ?", sdb.StatusPaySuccess, yesterdayStart, todayStart).Select("COALESCE(SUM(amount), 0)").Scan(&yesterdayAmount)
+
+			// 累计成功金额
+			sdb.DB.Model(&sdb.Orders{}).Where("status = ?", sdb.StatusPaySuccess).Select("COALESCE(SUM(amount), 0)").Scan(&totalAmount)
+
+			// 今日订单数 (所有状态)
+			sdb.DB.Model(&sdb.Orders{}).Where("created_at >= ?", todayStart).Count(&todayOrderCount)
+
+			// 当月成交订单数（自然月，已支付）
+			sdb.DB.Model(&sdb.Orders{}).Where("status = ? AND created_at >= ?", sdb.StatusPaySuccess, currentMonthStart).Count(&currentMonthSuccessOrderCount)
 
 			c.JSON(http.StatusOK, gin.H{
 				"code": 0,
 				"msg":  "success",
 				"data": gin.H{
-					"userCount":         userCount,
-					"successOrderCount": successOrderCount,
-					"walletCount":       walletCount,
+					"userCount":                     userCount,
+					"successOrderCount":             successOrderCount,
+					"pendingOrderCount":             pendingOrderCount,
+					"walletCount":                   walletCount,
+					"todayAmount":                   todayAmount,
+					"yesterdayAmount":               yesterdayAmount,
+					"totalAmount":                   totalAmount,
+					"todayOrderCount":               todayOrderCount,
+					"currentMonthSuccessOrderCount": currentMonthSuccessOrderCount,
 				},
 			})
 		})
 
-		// 修改用户密码
-		admin.POST("/api/users/password", func(c *gin.Context) {
+		// 修改当前管理员账号和密码
+		admin.POST("/api/account", func(c *gin.Context) {
 			var req struct {
-				UserId      int    `json:"userId"`
-				NewPassword string `json:"newPassword" validate:"required,min=6,max=18,alphanum"`
+				UserName string `json:"username" validate:"required,min=5,max=12,alphanum"`
+				Password string `json:"password" validate:"omitempty,min=5,max=18,alphanum"`
 			}
 
 			if err := c.ShouldBindJSON(&req); err != nil {
@@ -232,33 +241,61 @@ func Start() {
 				return
 			}
 
-			/* 	if req.NewPassword == "" {
-				c.JSON(400, gin.H{"code": 1, "message": "新密码不能为空"})
-				return
-			} */
-			//  验证参数是否符合要求
 			err := validate.Struct(req)
 			if err != nil {
 				c.JSON(400, gin.H{"code": 1, "message": err.Error()})
 				return
 			}
 
-			// 对密码加密
-			hash, _ := sdb.HashPassword(req.NewPassword)
-
-			// 更新用户密码
-			result := sdb.DB.Model(&sdb.User{}).Where("id = ?", req.UserId).Update("PassWord", hash)
+			var currentUser sdb.User
+			result := sdb.DB.Where("deleted_at IS NULL").Order("id ASC").First(&currentUser)
 			if result.Error != nil {
+				c.JSON(500, gin.H{"code": 1, "message": "获取当前账号失败"})
+				return
+			}
+
+			var duplicated int64
+			sdb.DB.Model(&sdb.User{}).
+				Where("deleted_at IS NULL AND UserName = ? AND id <> ?", req.UserName, currentUser.ID).
+				Count(&duplicated)
+			if duplicated > 0 {
+				c.JSON(400, gin.H{"code": 1, "message": "账号已存在"})
+				return
+			}
+
+			updates := map[string]interface{}{
+				"UserName": req.UserName,
+			}
+			userNameChanged := currentUser.UserName != req.UserName
+			if req.Password != "" {
+				hash, hashErr := sdb.HashPassword(req.Password)
+				if hashErr != nil {
+					c.JSON(500, gin.H{"code": 1, "message": "密码加密失败"})
+					return
+				}
+				updates["PassWord"] = hash
+			}
+
+			if err := sdb.DB.Model(&sdb.User{}).Where("id = ?", currentUser.ID).Updates(updates).Error; err != nil {
 				c.JSON(500, gin.H{"code": 1, "message": "更新失败"})
 				return
 			}
 
-			if result.RowsAffected == 0 {
-				c.JSON(404, gin.H{"code": 1, "message": "用户不存在"})
-				return
+			if userNameChanged {
+				token, tokenErr := GenerateToken()
+				if tokenErr != nil {
+					mylog.Logger.Error("更新账号后生成 token 失败", zap.Error(tokenErr))
+					c.JSON(500, gin.H{"code": 1, "message": "账号已更新，但登录状态刷新失败"})
+					return
+				}
+				setAuthCookie(c, token, 3600*24)
 			}
 
-			c.JSON(200, gin.H{"code": 0, "message": "密码修改成功"})
+			c.JSON(200, gin.H{
+				"code":    0,
+				"message": "账号安全设置已更新",
+				"relogin": false,
+			})
 		})
 
 		// 添加钱包地址
@@ -273,6 +310,11 @@ func Start() {
 
 			if wallet.Currency == "" || wallet.Token == "" {
 				c.JSON(400, gin.H{"code": 1, "message": "币种和钱包地址不能为空"})
+				return
+			}
+
+			if err := validateWalletToken(wallet.Currency, wallet.Token); err != nil {
+				c.JSON(400, gin.H{"code": 1, "message": err.Error()})
 				return
 			}
 
@@ -372,6 +414,11 @@ func Start() {
 
 			if wallet.Currency == "" || wallet.Token == "" {
 				c.JSON(400, gin.H{"code": 1, "message": "币种和钱包地址不能为空"})
+				return
+			}
+
+			if err := validateWalletToken(wallet.Currency, wallet.Token); err != nil {
+				c.JSON(400, gin.H{"code": 1, "message": err.Error()})
 				return
 			}
 
@@ -488,10 +535,28 @@ func Start() {
 				})
 				return
 			}
+
 			c.JSON(http.StatusOK, gin.H{
 				"code": 0,
 				"msg":  "success",
-				"data": setting,
+				"data": settingResponseData(setting),
+			})
+		})
+
+		admin.GET("/api/settings/secret-key", func(c *gin.Context) {
+			var setting sdb.Setting
+			result := sdb.DB.First(&setting)
+			if result.Error != nil || result.RowsAffected == 0 {
+				c.JSON(500, gin.H{"code": 1, "message": "通信密钥读取失败"})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"code": 0,
+				"msg":  "success",
+				"data": gin.H{
+					"SecretKey": setting.SecretKey,
+				},
 			})
 		})
 
@@ -511,87 +576,60 @@ func Start() {
 				return
 			}
 
-			// 更新字段（只更新传入的字段）
-			updates := make(map[string]interface{})
+			updates, err := settingUpdatesFromRequest(req)
+			if err != nil {
+				c.JSON(400, gin.H{"code": 1, "message": err.Error()})
+				return
+			}
 
-			// 基础设置
-			if appname, ok := req["appname"]; ok {
-				if name, ok := appname.(string); ok && name != "" {
-					updates["AppName"] = name
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "应用名称不能为空"})
-					return
-				}
-			}
-			if customerservicecontact, ok := req["customerservicecontact"]; ok {
-				updates["CustomerServiceContact"] = customerservicecontact
-			}
-			if appurl, ok := req["appurl"]; ok {
-				if url, ok := appurl.(string); ok && url != "" {
-					updates["AppUrl"] = url
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "应用地址不能为空"})
-					return
-				}
-			}
-			if httpport, ok := req["httpport"]; ok {
-				if port, ok := httpport.(float64); ok && port >= 1 && port <= 65535 {
-					updates["Httpport"] = int(port)
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "HTTP端口必须在1-65535之间"})
-					return
-				}
-			}
-			if secretkey, ok := req["secretkey"]; ok {
-				updates["SecretKey"] = secretkey
-			}
-			if expirationdate, ok := req["expirationdate"]; ok {
-				if expiration, ok := expirationdate.(float64); ok && expiration > 0 {
-					updates["ExpirationDate"] = time.Duration(int64(expiration))
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "过期时间必须大于0"})
-					return
+			previousValues := map[string]interface{}{}
+			for field := range updates {
+				switch field {
+				case "AppName":
+					previousValues[field] = setting.AppName
+				case "AppUrl":
+					previousValues[field] = setting.AppUrl
+				case "Httpport":
+					previousValues[field] = setting.Httpport
+				case "ExpirationDate":
+					previousValues[field] = setting.ExpirationDate
+				case "CustomerServiceContact":
+					previousValues[field] = setting.CustomerServiceContact
+				case "SecretKey":
+					previousValues[field] = setting.SecretKey
+				case "Redishost":
+					previousValues[field] = setting.Redishost
+				case "Redisport":
+					previousValues[field] = setting.Redisport
+				case "Redispasswd":
+					previousValues[field] = setting.Redispasswd
+				case "Redisdb":
+					previousValues[field] = setting.Redisdb
+				case "Tgbotkey":
+					previousValues[field] = setting.Tgbotkey
+				case "Tgchatid":
+					previousValues[field] = setting.Tgchatid
+				case "Barkkey":
+					previousValues[field] = setting.Barkkey
 				}
 			}
 
-			// Redis设置
-			if redishost, ok := req["redishost"]; ok {
-				if host, ok := redishost.(string); ok && host != "" {
-					updates["Redishost"] = host
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "Redis主机不能为空"})
+			restorePreviousSettings := func() {
+				if len(previousValues) == 0 {
 					return
 				}
-			}
-			if redisport, ok := req["redisport"]; ok {
-				if port, ok := redisport.(float64); ok && port >= 1 && port <= 65535 {
-					updates["Redisport"] = int(port)
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "Redis端口必须在1-65535之间"})
-					return
-				}
-			}
-			if redispasswd, ok := req["redispasswd"]; ok {
-				updates["Redispasswd"] = redispasswd
-			}
-			if redisdb, ok := req["redisdb"]; ok {
-				if db, ok := redisdb.(float64); ok && db >= 0 && db <= 15 {
-					updates["Redisdb"] = int(db)
-				} else {
-					c.JSON(400, gin.H{"code": 1, "message": "Redis数据库编号必须在0-15之间"})
-					return
-				}
-			}
 
-			// 通知设置
-			if tgbotkey, ok := req["tgbotkey"]; ok {
-				updates["Tgbotkey"] = tgbotkey
-			}
-			if tgchatid, ok := req["tgchatid"]; ok {
-				updates["Tgchatid"] = tgchatid
-			}
-			if barkkey, ok := req["barkkey"]; ok {
-				updates["Barkkey"] = barkkey
+				if err := sdb.DB.Model(&setting).Where("id = ?", setting.ID).Updates(previousValues).Error; err != nil {
+					mylog.Logger.Error("回滚系统设置失败", zap.Error(err))
+					return
+				}
+
+				if reloadErr := rdb.Reload(); reloadErr != nil {
+					mylog.Logger.Error("回滚后重载 Redis 失败", zap.Error(reloadErr))
+				}
+				if reloadErr := mq.Reload(); reloadErr != nil {
+					mylog.Logger.Error("回滚后重载 MQ 失败", zap.Error(reloadErr))
+				}
 			}
 
 			// 执行更新
@@ -599,6 +637,30 @@ func Start() {
 				result := sdb.DB.Model(&setting).Where("id = ?", setting.ID).Updates(updates)
 				if result.Error != nil {
 					c.JSON(500, gin.H{"code": 1, "message": "保存失败"})
+					return
+				}
+			}
+
+			redisFields := []string{"Redishost", "Redisport", "Redispasswd", "Redisdb"}
+			redisUpdated := false
+			for _, field := range redisFields {
+				if _, ok := updates[field]; ok {
+					redisUpdated = true
+					break
+				}
+			}
+
+			if redisUpdated {
+				if err := rdb.Reload(); err != nil {
+					mylog.Logger.Error("重载 Redis 客户端失败", zap.Error(err))
+					restorePreviousSettings()
+					c.JSON(500, gin.H{"code": 1, "message": "Redis 配置校验失败，已回滚到原配置"})
+					return
+				}
+				if err := mq.Reload(); err != nil {
+					mylog.Logger.Error("重载 MQ Redis 连接失败", zap.Error(err))
+					restorePreviousSettings()
+					c.JSON(500, gin.H{"code": 1, "message": "任务队列重连失败，已回滚到原配置"})
 					return
 				}
 			}
@@ -622,20 +684,32 @@ func Start() {
 				c.JSON(400, gin.H{"code": 1, "message": "参数验证错误"})
 				return
 			}
-			var order sdb.Orders
-			// 通过订单号或者商城订单号查询最新的那条记录
-			sdb.DB.Where("order_id = ?", req.OrderID).Or("trade_id = ?", req.OrderID).Order("id DESC").First(&order)
-			if order.ID == 0 {
+			orderID := strings.TrimSpace(req.OrderID)
+			order, err := sdb.GetLatestOrderByTradeOrOrderID(orderID)
+			if err != nil || order.ID == 0 {
 				c.JSON(400, gin.H{"code": 1, "message": "订单不存在"})
 				return
 			}
-			order.Status = sdb.StatusPaySuccess
-			result := sdb.DB.Save(&order)
+
+			if order.Status == sdb.StatusPaySuccess {
+				c.JSON(200, gin.H{"code": 0, "message": "订单已手动完成"})
+				return
+			}
+
+			result := sdb.DB.Model(&sdb.Orders{}).
+				Where("id = ?", order.ID).
+				Update("status", sdb.StatusPaySuccess)
 			if result.Error != nil {
 				c.JSON(500, gin.H{"code": 1, "message": "保存失败"})
 				return
 			}
-			mylog.Logger.Info("订单已手动完成", zap.Any("order_id", order.OrderId))
+
+			order.Status = sdb.StatusPaySuccess
+			mylog.Logger.Info("订单已手动完成",
+				zap.String("lookup_value", orderID),
+				zap.String("trade_id", order.TradeId),
+				zap.String("order_id", order.OrderId),
+			)
 			// 异步回调
 			go cron.ProcessCallback(order)
 			c.JSON(200, gin.H{"code": 0, "message": "订单已手动完成"})
@@ -718,7 +792,7 @@ func Start() {
 		// 退出登录路由
 		admin.POST("/logout", func(c *gin.Context) {
 			// 清除cookie
-			c.SetCookie("token", "", -1, "/", "", false, true)
+			clearAuthCookie(c)
 			// 跳转到登录页
 			c.JSON(200, gin.H{"code": 0, "message": "退出成功"})
 		})
@@ -738,8 +812,34 @@ func Start() {
 	// 检查订单状态
 	pay.GET("/check-status/:trade_id", CheckOrderStatus)
 
+	// Vue SPA History Mode Fallback
+	r.NoRoute(func(c *gin.Context) {
+		// 排除 API 路由，其余 GET 请求全部返回 SPA 首页
+		if c.Request.Method == "GET" && !strings.HasPrefix(c.Request.URL.Path, "/api") && !strings.HasPrefix(c.Request.URL.Path, "/admin/api") {
+			c.File("./static/admin_spa/index.html")
+		} else {
+			c.JSON(404, gin.H{"code": 404, "message": "Not Found"})
+		}
+	})
+
 	// 读取系统设置
 	port := sdb.GetSetting().Httpport
 	// endless.ListenAndServe(":8080", r)
 	endless.ListenAndServe(fmt.Sprintf(":%d", port), r)
+}
+
+func validateWalletToken(currency string, token string) error {
+	token = strings.TrimSpace(token)
+	switch currency {
+	case "USDT-TRC20", "TRX":
+		if len(token) != 34 || !strings.HasPrefix(token, "T") {
+			return fmt.Errorf("TRON 钱包地址格式不正确")
+		}
+	case "USDT-Polygon", "USDT-BSC", "USDT-ERC20", "USDT-ArbitrumOne", "USDC-ERC20", "USDC-Polygon", "USDC-BSC", "USDC-ArbitrumOne":
+		if len(token) != 42 || !strings.HasPrefix(strings.ToLower(token), "0x") {
+			return fmt.Errorf("EVM 钱包地址格式不正确")
+		}
+	}
+
+	return nil
 }

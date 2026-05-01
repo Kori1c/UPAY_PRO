@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"upay_pro/db/sdb"
 	"upay_pro/mylog"
+
+	"go.uber.org/zap"
 )
 
 func sendBarkNotification(barkURL, title, body string) error {
@@ -39,11 +41,11 @@ func sendBarkNotification(barkURL, title, body string) error {
 	return nil
 }
 
-func Bark_Start(order sdb.Orders) {
+func Bark_Start(order sdb.Orders) error {
 
 	if sdb.GetSetting().Barkkey == "" {
 		mylog.Logger.Info("Barkkey为空，不能发送通知")
-		return
+		return nil
 	}
 
 	// 替换为你的 Bark URL
@@ -75,8 +77,10 @@ func Bark_Start(order sdb.Orders) {
 	// 发送通知
 	err := sendBarkNotification(barkURL, title, body)
 	if err != nil {
-		fmt.Println("发送通知失败:", err)
-	} else {
-		fmt.Println("通知发送成功！")
+		mylog.Logger.Error("发送 Bark 通知失败", zap.Error(err))
+		return err
 	}
+
+	mylog.Logger.Info("Bark 通知发送成功")
+	return nil
 }

@@ -1,162 +1,221 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
+<head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>UPay Pro - 服务器状态</title>
-  </head>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    <title>UPay Pro - 企业级加密货币支付网关</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #09090b;
+            --surface: rgba(24, 24, 27, 0.6);
+            --primary: #3b82f6;
+            --success: #10b981;
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --border: rgba(255, 255, 255, 0.1);
+        }
 
-    body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background-color: #191919;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      align-items: center;
-      color: #fff;
-    }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-    .container {
-      text-align: center;
-      padding: 3rem 2rem;
-      background: #2a2a2a;
-      border-radius: 20px;
-      border: 1px solid #444;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-      max-width: 400px;
-      width: 90%;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 2rem;
-    }
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg);
+            background-image: 
+                radial-gradient(circle at 20% 30%, rgba(59, 130, 246, 0.15) 0%, transparent 40%),
+                radial-gradient(circle at 80% 70%, rgba(16, 185, 129, 0.1) 0%, transparent 40%);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
 
-    .logo {
-      font-size: 3rem;
-      font-weight: bold;
-      color: #fff;
-      margin: 0;
-    }
+        .hero {
+            text-align: center;
+            z-index: 10;
+            max-width: 600px;
+            padding: 0 24px;
+            animation: fadeIn 0.8s ease-out;
+        }
 
-    .status-indicator {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      padding: 1rem 2rem;
-      background: rgba(76, 175, 80, 0.2);
-      border: 1px solid #4caf50;
-      border-radius: 50px;
-      font-size: 1.1rem;
-      font-weight: 500;
-      width: 100%;
-      max-width: 280px;
-    }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
 
-    .status-dot {
-      width: 12px;
-      height: 12px;
-      background: #4caf50;
-      border-radius: 50%;
-      animation: pulse 2s infinite;
-    }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            border-radius: 100px;
+            color: var(--success);
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 24px;
+        }
 
-    @keyframes pulse {
-      0% {
-        box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
-      }
-      70% {
-        box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
-      }
-      100% {
-        box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
-      }
-    }
+        .badge-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 12px var(--success);
+            animation: pulse 2s infinite;
+        }
 
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
+        }
 
+        h1 {
+            font-size: 48px;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            margin-bottom: 16px;
+            background: linear-gradient(to bottom right, #fff 50%, #71717a);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
 
-    .admin-btn {
-      display: block;
-      padding: 1rem 2rem;
-      background: #4caf50;
-      color: white;
-      text-decoration: none;
-      border-radius: 50px;
-      font-weight: 500;
-      transition: all 0.3s ease;
-      border: none;
-      cursor: pointer;
-      width: 100%;
-      max-width: 280px;
-      text-align: center;
-    }
+        p {
+            font-size: 18px;
+            color: var(--text-secondary);
+            margin-bottom: 40px;
+            line-height: 1.6;
+        }
 
-    .admin-btn:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
-      background: #45a049;
-    }
+        .cta-group {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+        }
 
-    .footer {
-      position: fixed;
-      bottom: 20px;
-      right: 20px;
-    }
+        .btn {
+            padding: 12px 28px;
+            border-radius: 12px;
+            font-weight: 600;
+            font-size: 15px;
+            text-decoration: none;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
 
-    .github-btn {
-      width: 45px;
-      height: 45px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: #333;
-      border: 1px solid #555;
-      border-radius: 10px;
-      color: white;
-      text-decoration: none;
-      transition: all 0.3s ease;
-    }
+        .btn-primary {
+            background: var(--text-primary);
+            color: var(--bg);
+        }
 
-    .github-btn:hover {
-      background: #444;
-      transform: translateY(-2px);
-    }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+            background: #fff;
+        }
 
-    @media (max-width: 600px) {
-      .logo {
-        font-size: 2.5rem;
-      }
-    }
-  </style>
-  <body>
-    <div class="container">
-      <div class="logo">UPay Pro</div>
-      
-      <div class="status-indicator">
-        <div class="status-dot"></div>
-        <span>服务器运行正常</span>
-      </div>
-      
+        .btn-secondary {
+            background: var(--surface);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            backdrop-filter: blur(10px);
+        }
 
-      
-      <a href="/login" class="admin-btn">进入管理后台</a>
+        .btn-secondary:hover {
+            background: rgba(39, 39, 42, 0.8);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .floating-cards {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .card {
+            position: absolute;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            backdrop-filter: blur(8px);
+            border-radius: 16px;
+            padding: 16px;
+            width: 200px;
+            opacity: 0.3;
+            animation: float 6s infinite ease-in-out;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        .card-1 { top: 15%; left: 10%; animation-delay: 0s; }
+        .card-2 { top: 65%; left: 15%; animation-delay: 1s; }
+        .card-3 { top: 20%; right: 10%; animation-delay: 2s; }
+        .card-4 { top: 70%; right: 15%; animation-delay: 3s; }
+
+        @media (max-width: 640px) {
+            h1 { font-size: 36px; }
+            p { font-size: 16px; }
+            .cta-group { flex-direction: column; width: 100%; }
+            .btn { justify-content: center; }
+            .card { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="floating-cards">
+        <div class="card card-1">
+            <div style="height: 12px; width: 60%; background: var(--border); border-radius: 4px; margin-bottom: 8px;"></div>
+            <div style="height: 12px; width: 40%; background: var(--border); border-radius: 4px;"></div>
+        </div>
+        <div class="card card-2">
+            <div style="height: 12px; width: 50%; background: var(--border); border-radius: 4px; margin-bottom: 8px;"></div>
+            <div style="height: 12px; width: 70%; background: var(--border); border-radius: 4px;"></div>
+        </div>
+        <div class="card card-3"></div>
+        <div class="card card-4"></div>
     </div>
 
-    <div class="footer">
-      <a href="#" class="github-btn">
-        <svg fill="currentColor" viewBox="0 0 496 512" height="20px">
-          <path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"></path>
-        </svg>
-      </a>
-    </div>
+    <main class="hero">
+        <div class="badge">
+            <div class="badge-dot"></div>
+            系统运行正常 · v1.2.0
+        </div>
+        <h1>UPay Pro</h1>
+        <p>
+            下一代企业级加密货币支付网关。<br>
+            支持多链秒级监控、自动汇率转换与高并发订单处理。
+        </p>
+        
+        <div class="cta-group">
+            <a href="/login" class="btn btn-primary">
+                进入管理后台
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+            </a>
+            <a href="https://github.com" target="_blank" class="btn btn-secondary">
+                查看文档
+            </a>
+        </div>
+    </main>
 
-
-  </body>
+    <footer style="position: absolute; bottom: 32px; color: var(--text-secondary); font-size: 13px;">
+        &copy; 2026 UPay Pro. All rights reserved.
+    </footer>
+</body>
 </html>
