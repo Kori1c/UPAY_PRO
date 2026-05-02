@@ -21,6 +21,15 @@ type Data struct {
 	Token          string  `json:"token"`
 	ExpirationTime int64   `json:"expiration_time"`
 	PaymentURL     string  `json:"payment_url"`
+	Type           string  `json:"type"`
+	Network        string  `json:"network"`
+	Chain          string  `json:"chain"`
+	PayAmount      float64 `json:"pay_amount"`
+	PayAddress     string  `json:"pay_address"`
+	QRContent      string  `json:"qr_content"`
+	QRCodeURL      string  `json:"qr_code_url,omitempty"`
+	StatusURL      string  `json:"status_url"`
+	StatusPath     string  `json:"status_path"`
 }
 
 // 定义返回的结构体|创建订单后返回的数据

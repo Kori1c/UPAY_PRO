@@ -379,15 +379,7 @@ func CreateTransaction(c *gin.Context) {
 		orderInfo := dto.Response{
 			StatusCode: http.StatusOK,
 			Message:    "success",
-			Data: dto.Data{
-				TradeID:        order1.TradeId,
-				OrderID:        order1.OrderId,
-				Amount:         order1.Amount,
-				ActualAmount:   order1.ActualAmount,
-				Token:          order1.Token,
-				ExpirationTime: order1.ExpirationTime,
-				PaymentURL:     fmt.Sprintf("%s%s%s", sdb.GetSetting().AppUrl, "/pay/checkout-counter/", order1.TradeId),
-			},
+			Data:       buildCreateOrderData(order1),
 		}
 		c.JSON(http.StatusOK, orderInfo)
 		return
@@ -523,17 +515,33 @@ func CreateTransaction(c *gin.Context) {
 	orderInfo := dto.Response{
 		StatusCode: http.StatusOK,
 		Message:    "success",
-		Data: dto.Data{
-			TradeID:        order.TradeId,
-			OrderID:        order.OrderId,
-			Amount:         order.Amount,
-			ActualAmount:   order.ActualAmount,
-			Token:          order.Token,
-			ExpirationTime: order.ExpirationTime,
-			PaymentURL:     fmt.Sprintf("%s%s%s", sdb.GetSetting().AppUrl, "/pay/checkout-counter/", order.TradeId),
-		},
+		Data:       buildCreateOrderData(*order),
 	}
 	c.JSON(http.StatusOK, orderInfo)
+}
+
+func buildCreateOrderData(order sdb.Orders) dto.Data {
+	appURL := strings.TrimRight(sdb.GetSetting().AppUrl, "/")
+	paymentPath := fmt.Sprintf("/pay/checkout-counter/%s", order.TradeId)
+	statusPath := fmt.Sprintf("/pay/check-status/%s", order.TradeId)
+
+	return dto.Data{
+		TradeID:        order.TradeId,
+		OrderID:        order.OrderId,
+		Amount:         order.Amount,
+		ActualAmount:   order.ActualAmount,
+		Token:          order.Token,
+		ExpirationTime: order.ExpirationTime,
+		PaymentURL:     appURL + paymentPath,
+		Type:           order.Type,
+		Network:        order.Type,
+		Chain:          order.Type,
+		PayAmount:      order.ActualAmount,
+		PayAddress:     order.Token,
+		QRContent:      order.Token,
+		StatusURL:      appURL + statusPath,
+		StatusPath:     statusPath,
+	}
 }
 
 func generateOrderID() string {

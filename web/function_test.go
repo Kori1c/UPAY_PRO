@@ -433,6 +433,45 @@ func TestCreateTransactionReusesExistingPendingOrderForSameOrderID(t *testing.T)
 	}
 }
 
+func TestCreateTransactionReturnsEmbeddablePaymentDetails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setupCreateOrderTestEnv(t)
+
+	router := gin.New()
+	router.POST("/api/create_order", AuthMiddleware(), CreateTransaction)
+
+	response := createOrderForTest(t, router, "EMBED-PAYMENT-DETAILS-001", 10)
+	data := response.Data
+
+	if data.Network != "USDT-TRC20" {
+		t.Fatalf("network = %q, want %q", data.Network, "USDT-TRC20")
+	}
+	if data.PayAddress != data.Token {
+		t.Fatalf("pay_address = %q, want token %q", data.PayAddress, data.Token)
+	}
+	if data.PayAmount != data.ActualAmount {
+		t.Fatalf("pay_amount = %.2f, want actual_amount %.2f", data.PayAmount, data.ActualAmount)
+	}
+	if data.QRContent != data.Token {
+		t.Fatalf("qr_content = %q, want token %q", data.QRContent, data.Token)
+	}
+
+	expectedPaymentURL := fmt.Sprintf("http://localhost:8090/pay/checkout-counter/%s", data.TradeID)
+	if data.PaymentURL != expectedPaymentURL {
+		t.Fatalf("payment_url = %q, want %q", data.PaymentURL, expectedPaymentURL)
+	}
+
+	expectedStatusPath := fmt.Sprintf("/pay/check-status/%s", data.TradeID)
+	if data.StatusPath != expectedStatusPath {
+		t.Fatalf("status_path = %q, want %q", data.StatusPath, expectedStatusPath)
+	}
+
+	expectedStatusURL := fmt.Sprintf("http://localhost:8090%s", expectedStatusPath)
+	if data.StatusURL != expectedStatusURL {
+		t.Fatalf("status_url = %q, want %q", data.StatusURL, expectedStatusURL)
+	}
+}
+
 func TestCreateTransactionConcurrentSameAmountUsesUniqueActualAmounts(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	testEnv := setupCreateOrderTestEnv(t)
